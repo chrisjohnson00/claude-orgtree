@@ -163,7 +163,7 @@ test('§7 a toggle names itself to a screen reader without reading out its own '
     const panel = view.el.querySelector<HTMLElement>(
       '#app-settings-panel-runtime')!
     const rows = [...panel.querySelectorAll<HTMLElement>('.set-row')]
-    assert.equal(rows.length, 3)
+    assert.equal(rows.length, 5)
     for (const row of rows) {
       const box = row.querySelector<HTMLInputElement>('.set-lead input')!
       const name = box.getAttribute('aria-label')
@@ -176,12 +176,19 @@ test('§7 a toggle names itself to a screen reader without reading out its own '
       assert.equal(row.querySelector('.set-state')!.textContent,
         box.checked ? 'on' : 'off')
     }
-    // …and it still tracks through a real flip that goes to the server
-    const first = rows[0]!.querySelector<HTMLInputElement>('.set-lead input')!
+    // …and it still tracks through a real flip that goes to the server.
+    // Select by aria-label, not position — more toggles have joined this
+    // panel since, and a positional index silently starts asserting on the
+    // wrong row rather than failing.
+    const warmRow = rows.find((r) =>
+      r.querySelector('.set-lead input')?.getAttribute('aria-label')
+        === 'keep agent processes warm')!
+    assert.ok(warmRow, 'the warm-processes row is missing')
+    const first = warmRow.querySelector<HTMLInputElement>('.set-lead input')!
     assert.equal(first.checked, true)
     await inAct(async () => { first.click(); await flush(10) })
     assert.equal(first.checked, false)
-    assert.equal(rows[0]!.querySelector('.set-state')!.textContent, 'off')
+    assert.equal(warmRow.querySelector('.set-state')!.textContent, 'off')
   } finally { await view.unmount(); delete g.fetch; localStorage.clear() }
 })
 

@@ -435,9 +435,7 @@ domTest('§9.6 a resize can ARM the ↑ chip, not only retire it',
     const msgs = el.querySelector('.msgs')!
     // hold the chip down while a user turn arrives AFTER mount
     msgs.getBoundingClientRect = rectAt(-100)
-    s.userMsg(`FROM ${USER} (user)
-
-please check the deploy`)
+    s.mailMsg(USER, 'please check the deploy')
     await inAct(async () => { await refreshConvo(SL, ND, { force: true }) })
     await flush()
     assert.ok(!el.querySelector('.pinuser'), 'no chip yet')
@@ -485,9 +483,7 @@ domTest('§9.8 the ↑ chip fades only when its label is really cut',
     // and a fade over text that ended on its own claims content that is not
     // there. So it must arm and retire on the panel's width alone — which,
     // on a memoized panel, only the ResizeObserver can report.
-    s.userMsg(`FROM ${USER} (user)
-
-please check the deploy, and the staging one too`)
+    s.mailMsg(USER, 'please check the deploy, and the staging one too')
     s.assistantMsg('all green')
     await refreshConvo(SL, ND)
     const { el } = await mount(deskEl(node(ND), SL, { compact: true }))
@@ -583,9 +579,7 @@ domTest('§9.4 a resize recomputes the ↑-jump target, not just the pin',
     // notice. Without `calcPinRef.current()` in the observer this passes
     // nothing: the chip keeps pointing at a message that is already on screen
     // until the reader happens to scroll.
-    s.userMsg(`FROM ${USER} (user)
-
-please check the deploy`)
+    s.mailMsg(USER, 'please check the deploy')
     s.assistantMsg('all green')
     await refreshConvo(SL, ND)
     const { el } = await mount(deskEl(node(ND), SL, { compact: true }))

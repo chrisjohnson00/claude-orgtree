@@ -235,10 +235,13 @@ test('⑨  every read-marking call refreshes the payload its rows come from',
         CALLS.lastIndex = 0
         if (/^\s*(export )?const (markRead|clearInbox|orgInboxRead)/.test(l)) continue
         if (EXEMPT.some((re) => re.test(l))) continue
-        // the refresh may ride the same line or the next two (formatting)
+        // the refresh may ride the same line or the next two (formatting) —
+        // either a chained `.then()`, or an `await`ed call followed by the
+        // same bump-and-refresh pair inline (App.tsx's onReply path)
         const near = lines(f).filter((x) => x.n >= n && x.n <= n + 3)
           .map((x) => x.l).join(' ')
-        if (!/\.then\(/.test(near)) {
+        if (!/\.then\(/.test(near)
+          && !(/setReadBump\(/.test(near) && /refresh\?\.\(\)/.test(near))) {
           bad.push(`${f}:${n}  ${l.trim().slice(0, 80)}`)
         }
       }
@@ -360,12 +363,13 @@ test('⑭  the pinned last-user-turn chip attributes by envelope, not role',
   () => {
     // FR-20 (user idea 2026-08-08). In orgtree a user-ROLE transcript record
     // is envelope-wrapped input from ANY sender — a sibling's mail pinned as
-    // "you" misattributes someone else's words to the human. The durable twin
-    // of pending-mail's `m.from === USER` filter is the envelope's FROM line.
+    // "you" misattributes someone else's words to the human. Typed transcript
+    // events retired the raw envelope FROM-line regex; the durable twin is
+    // now `authoredUserLabel`, which decodes the segment rows itself and
+    // returns null unless the row is actually authored by the human.
     const src = code('canvas/desk.tsx')
-    assert.ok(/`\^FROM \$\{USER\} \\\(`/.test(src)
-      || /\^FROM \$\{USER\}/.test(src),
-      'lastUser no longer keys on the envelope FROM line — bare role would '
+    assert.ok(/authoredUserLabel\(/.test(src),
+      'lastUser no longer keys on authoredUserLabel — a bare role check would '
       + 'pin a sibling\'s mail as "you"')
     assert.ok(/\{pinTarget && \(/.test(src),
       'the chip render lost its visibility gate — it must only show while '
