@@ -749,8 +749,8 @@ export function AccountsPanel({ toast, close }: {
                   ))}
                 </div>
                 {/* ⚠ DRIFT SITS BESIDE THE TIERS IT SUPPRESSES. Nothing in
-                    this repo refreshes the pin — `update.ps1`, `update.sh`
-                    and `install-autostart.ps1` have no codex step — and
+                    this repo refreshes the pin — `update.sh` has no codex
+                    step — and
                     OpenAI gates rollout models on the reporting CLI version,
                     so a stale CLI SHORTENS the list above with no other
                     symptom. Measured 2026-09-04: pinned 0.150.1 listed 9

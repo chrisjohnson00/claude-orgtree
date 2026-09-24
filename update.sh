@@ -5,11 +5,6 @@
 #   ./update.sh --expose-admin      # DANGEROUS, see below
 #   ORGTREE_EXPOSE_ADMIN=1 ./update.sh   # same, for services
 #
-# The bash counterpart of update.ps1, step for step. Written for Linux and
-# macOS; it also runs under Git Bash / MSYS on Windows, where the two things
-# that cannot be POSIX -- finding and killing the process holding a TCP port --
-# fall back to netstat + taskkill.
-#
 # Steps: venv -> git pull -> npm install + build the UI -> pip install ->
 # restart the backend (which serves the built UI) -> health-check.
 #
@@ -59,15 +54,13 @@ ROOT=$(cd -- "$(dirname -- "$0")" && pwd)
 cd "$ROOT" || die "cannot cd to $ROOT"
 
 # ⚠ AM I ACTUALLY STANDING IN THE ORGTREE CHECKOUT? (ps-guards audit
-# 2026-08-27; mirrors update.ps1.) ROOT comes from the script's own location
+# 2026-08-27.) ROOT comes from the script's own location
 # and nothing checked it landed anywhere real. This script pulls, kills
 # whatever holds a port, rebuilds and restarts; pointed at the wrong directory
 # it does all of that to the WRONG tree, and the first complaint would arrive
 # much later phrased as a git or pip problem rather than as a root problem.
 # NAME the directory when it is wrong — the failure this guards against is a
 # message that sends the reader somewhere else.
-# Scoped to what the MODE uses: update.sh has no -EnsureUp leg, so all three
-# apply here. Kept as a list so the ps1 and sh anchor sets stay comparable.
 for _anchor in requirements.txt backend/orgtree/api.py frontend/package.json; do
   [ -e "$ROOT/$_anchor" ] || die "REFUSING to deploy: resolved the repo root to
     $ROOT
@@ -75,22 +68,14 @@ and that directory has no '$_anchor', so it is not an orgtree checkout.
 Nothing was pulled, rebuilt or restarted."
 done
 
-# Windows-under-bash needs the native tools for ports and process kills
-case "${OSTYPE:-}" in
-  msys*|cygwin*|win32) WINDOWS=1 ;;
-  *) WINDOWS=0 ;;
-esac
-
 # python: the first candidate that actually RUNS. Existence is not enough --
-# Windows ships an App Execution Alias at ~/AppData/Local/Microsoft/WindowsApps
-# /python3 that `command -v` finds happily and that then prints "Python was not
-# found" and fails, so a which-style check picks a stub over the real
-# interpreter sitting right behind it (hit on this machine, 2026-08-03).
+# a broken shim on PATH is found by `command -v` and then fails, so a
+# which-style check would pick it over the real interpreter behind it.
 # PYTHON overrides, and is validated too: it must be the interpreter that HAS
 # the deps, which is the whole reason the override exists (a venv, normally).
 py_works() { "$1" -c 'import sys; sys.exit(0)' >/dev/null 2>&1; }
 BOOT_PY=''
-for cand in python3 python py; do
+for cand in python3 python; do
   command -v "$cand" >/dev/null 2>&1 || continue
   if py_works "$cand"; then BOOT_PY=$cand; break; fi
 done
@@ -112,9 +97,7 @@ done
 # breaking a deployment that was working a minute ago.
 VENV_DIR="$ROOT/.venv"
 venv_py() {                      # the interpreter inside $VENV_DIR, if any
-  for c in "$VENV_DIR/bin/python" "$VENV_DIR/Scripts/python.exe"; do
-    [ -x "$c" ] && { echo "$c"; return; }
-  done
+  [ -x "$VENV_DIR/bin/python" ] && echo "$VENV_DIR/bin/python"
 }
 
 PY=''
@@ -170,8 +153,8 @@ echo "== orgtree update (currently $BEFORE) =="
 # their self-update restarted every org, advanced nothing, and logged no
 # reason. --ff-only refuses on some dirt and sails past the rest; an operator
 # reading the log must be able to see which.
-# ⚠ AN UNREADABLE TREE IS NOT A CLEAN TREE (ps-guards audit 2026-08-27, and
-# the same fault was measured in update.ps1). `git status --porcelain` returns
+# ⚠ AN UNREADABLE TREE IS NOT A CLEAN TREE (ps-guards audit 2026-08-27).
+# `git status --porcelain` returns
 # an EMPTY string two ways -- the tree is clean, or git could not read it at
 # all -- and the guard below tests only for emptiness. There is no `set -e`
 # here (only `set -u`), so a failing git left DIRTY empty, the guard did not
@@ -221,7 +204,7 @@ if [ "$AFTER" = "$BEFORE" ]; then
   # machine, silently: a deploy of a locally-made commit never moves HEAD
   # during the pull, so "HEAD advanced" is not a test for "is there anything
   # to ship". Kept for a scheduled job that wants the old meaning and accepts
-  # that a local commit will not deploy under it. Mirrors update.ps1.
+  # that a local commit will not deploy under it.
   if [ "${ORGTREE_ONLY_IF_BEHIND:-}" = "1" ]; then
     echo "already up to date ($AFTER) -- NOT restarting: a self-update with nothing to deploy would cut every org's turn for no gain"
     exit 0
@@ -249,13 +232,9 @@ fi
 # exactly the population it exists for. After the pull, before the build, and a
 # very long way before the stop.
 #
-# ⚠ POSIX HAS NO DETACHED CUTOVER WRAPPER. tools/cutover_deploy.{py,ps1} is
-# Windows-only (Get-NetTCPConnection, Stop-Process, a Global\ mutex), so this
-# script cannot hand off the way update.ps1 does. What it CAN do is run the
-# same portable tool -- tools/cutover.py, which is plain Python and has no
-# Windows in it -- in the window it already opens between stopping the backend
-# and starting it. That inline ladder is section 4a-cutover below. The
-# differences from the Windows path are stated there rather than glossed.
+# The upgrade itself runs inline: tools/cutover.py, in the window this script
+# already opens between stopping the backend and starting it. That is section
+# 4a-cutover below.
 DATA_ROOT=${ORGTREE_DATA:-$HOME/orgtree}
 PREFLIGHT="$ROOT/tools/preflight_store.py"
 DO_CUTOVER=0
@@ -356,11 +335,7 @@ fi
 # usual three and take the first that answers. Listeners only -- never match a
 # client connection, which would kill an innocent process.
 listeners() {
-  if [ "$WINDOWS" = 1 ]; then
-    netstat -ano -p tcp 2>/dev/null \
-      | awk -v p=":$PORT" '$1=="TCP" && $2 ~ p"$" && $4=="LISTENING" {print $5}' \
-      | sort -u
-  elif command -v lsof >/dev/null 2>&1; then
+  if command -v lsof >/dev/null 2>&1; then
     lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null
   elif command -v ss >/dev/null 2>&1; then
     ss -lptnH "sport = :$PORT" 2>/dev/null \
@@ -371,11 +346,6 @@ listeners() {
 }
 
 # -- 4a - what this backend must be carrying when it comes back -------------
-# The Windows half of this lives in update.ps1 section 4a and does the same
-# thing through the same script, deliberately: the two deploy scripts must not
-# drift on what "healthy" means (backend/tests/test_deploy_health.py pins that
-# they both call it).
-#
 # Taken BEFORE the stop: the expectation comes from the data root's own
 # contents, and this is the last moment the OUTGOING process can be asked what
 # it was serving -- the difference between "this deploy lost them" and "it was
@@ -399,45 +369,30 @@ OLD_PIDS=$PIDS
 if [ -n "${PIDS:-}" ]; then
   for pid in $PIDS; do
     echo "stopping old backend (pid $pid)"
-    if [ "$WINDOWS" = 1 ]; then
-      taskkill //PID "$pid" //F >/dev/null 2>&1
-    else
-      kill "$pid" 2>/dev/null        # ask nicely first
-    fi
+    kill "$pid" 2>/dev/null        # ask nicely first
   done
   # give it a moment, then insist
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.2
     [ -z "$(listeners)" ] && break
   done
-  if [ "$WINDOWS" != 1 ] && [ -n "$(listeners)" ]; then
+  if [ -n "$(listeners)" ]; then
     for pid in $(listeners); do kill -9 "$pid" 2>/dev/null; done
     sleep 0.5
   fi
   [ -n "$(listeners)" ] && die "port $PORT is still held -- stop that process and re-run"
 fi
 
-# -- 4a-cutover - the automatic upgrade off JSON (POSIX) --------------------
+# -- 4a-cutover - the automatic upgrade off JSON ------------------------------
 # Runs ONLY when section 1c found an unmigrated JSON root under a SQLite build.
-# This is the window the Windows path uses too: the backend is stopped and
-# nothing has been started, which is the only moment a data root can be
-# converted safely.
+# The backend is stopped and nothing has been started, which is the only
+# moment a data root can be converted safely. The data work is tools/cutover.py
+# (`migrate`, then `export-verify`).
 #
-# ⚠ HOW THIS DIFFERS FROM THE WINDOWS PATH, stated rather than glossed:
-#   * Windows hands the whole sequence to tools/cutover_deploy.{py,ps1}, which
-#     is detached, holds a machine-wide mutex, PROVES the backend stopped by
-#     taking the data root's owner lock, and has a drilled recovery ladder.
-#     None of that exists for POSIX and this is not a port of it.
-#   * What IS shared is the part that touches data: tools/cutover.py, plain
-#     portable Python, the same `migrate` and `export-verify` subcommands the
-#     Windows wrapper shells out to. The tool is the same; the driving is not.
-#   * This script does NOT roll back automatically. A rollback rewrites org
-#     authority from an export, and running that from a second, undrilled
-#     implementation is a worse risk than stopping and printing the command.
-#     The command is printed in full where it is needed.
-#   * There is no `-EnsureUp` mode in this script and no 5-minute watchdog on
-#     POSIX (tools/install-autostart.ps1 is Windows-only), so the "relaunch a
-#     refusing build forever" failure does not exist here to guard against.
+# ⚠ This script does NOT roll back automatically. A rollback rewrites org
+# authority from an export, and running it unattended is a worse risk than
+# stopping and printing the command. The command is printed in full where it is
+# needed.
 #
 # ORGTREE_STORE_FORCED is the one thing this section can leave behind for the
 # rest of the script: an upgrade that did not happen means the backend started
@@ -462,8 +417,7 @@ if [ "$DO_CUTOVER" = 1 ]; then
   if [ "$MIG_RC" != 0 ]; then
     # A migration that stops part-way leaves a MIXED root, which starts under
     # NEITHER backend. A plain re-run re-attempts only what is still pending,
-    # so finishing the job is the cheap correct move. (Same reasoning, and the
-    # same single retry, as tools/cutover_deploy.ps1 step 3.)
+    # so finishing the job is the cheap correct move.
     note "migrate exited $MIG_RC -- retrying ONCE, because a part-way root starts under neither backend"
     MIG_RC=0
     ORGTREE_MIGRATE=1 "$PY" "$CUT" migrate "$DATA_ROOT" || MIG_RC=$?
@@ -520,8 +474,7 @@ if [ "$DO_CUTOVER" = 1 ]; then
       # ⚠ THE INSTALL COMES UP ANYWAY, AND THAT IS THE POINT OF THIS FILE.
       # A failed export means there is no validated export to roll back to
       # WHATEVER this script does, so refusing to start would be an outage
-      # with nothing bought by it (coordinator ruling 2026-09-04, and the
-      # Windows ladder does the same). But it leaves the install in a state
+      # with nothing bought by it (coordinator ruling 2026-09-04). But it leaves the install in a state
       # nobody chose and nobody was told about, and the moment that state
       # matters is the moment somebody needs to roll back -- the worst
       # possible moment to find out. So it is said three times: in the log,
@@ -588,21 +541,19 @@ MARKER
 fi
 
 # -- 4b - the Claude Code CLI pin (No.44, D-222) -----------------------------------
-# The bash half of update.ps1's section 4b; the reasoning lives there in full
-# and is not repeated here. In short: it runs BETWEEN the stop and the start
-# (on Windows a running claude.exe cannot be overwritten, and this script runs
-# under Git Bash there too), it is a FLOOR rather than an equality (a newer
-# pin is reported, never rolled back), and it NEVER blocks the restart -- an
-# old pin still runs turns, a backend that never came back up is an outage.
+# It runs BETWEEN the stop and the start, so no turn is using the CLI while it
+# is replaced. It is a FLOOR rather than an equality: a newer pin is reported,
+# never rolled back, because an operator who installed a newer CLI did so on
+# purpose. It NEVER blocks the restart -- an old pin still runs turns, a
+# backend that never came back up is an outage.
 printf '\n== claude cli ==\n'
 PIN_DIR="$DATA_ROOT/cli"
 PIN_PKG="$PIN_DIR/node_modules/@anthropic-ai/claude-code/package.json"
-# the executable's name differs by platform; the package ships one or the other
 PIN_BIN="$PIN_DIR/node_modules/@anthropic-ai/claude-code/bin/claude"
-[ "$WINDOWS" = 1 ] && PIN_BIN="$PIN_BIN.exe"
 
 # The target version is READ FROM THE CODE (backend/orgtree/clipin.py), never
-# retyped here -- see update.ps1. clipin imports nothing, so a failure here is
+# retyped here: a version written down twice is a machine that reports one
+# number and runs another. clipin imports nothing, so a failure here is
 # a broken checkout, not a broken pin, and we leave the CLI alone rather than
 # guess a version.
 WANT_VER=$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from orgtree import clipin; print(clipin.PIN)' "$ROOT/backend" 2>/dev/null | head -n 1 | tr -d '[:space:]')
@@ -621,7 +572,7 @@ pin_version() {
   sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PIN_PKG" | head -n 1
 }
 # "2.1.220" -> 2001000220, so a plain integer compare orders versions correctly
-# (`sort -V` is not on macOS's stock sort, and this needs no subprocess).
+# without a subprocess.
 ver_key() {
   local v a rest b c
   case "$1" in
@@ -717,14 +668,12 @@ else
 fi
 
 # -- 4c - the Codex CLI pin --------------------------------------------------
-# The bash half of update.ps1's section 4c; the reasoning lives there in full
-# and is not repeated here. In short: nothing in this repo refreshed this pin
-# until 2026-09-04, so it sat at whatever a human last installed by hand;
-# OpenAI gates rollout models on the reporting CLI version, so a stale pin
-# silently HIDES a hireable tier. It runs in the same window as 4b (between the
-# stop and the start, because a running codex process holds its own image open
-# on Windows and this script runs under Git Bash there too), it is a FLOOR
-# rather than an equality, and it NEVER blocks the restart.
+# Nothing in this repo refreshed this pin until 2026-09-04, so it sat at
+# whatever a human last installed by hand; OpenAI gates rollout models on the
+# reporting CLI version, so a stale pin silently HIDES a hireable tier. It runs
+# in the same window as 4b (between the stop and the start, so no running codex
+# process is replaced under it), it is a FLOOR rather than an equality, and it
+# NEVER blocks the restart.
 #
 # ⚠ THE VERSION SPEC IS EXPLICIT AND --save-exact. Measured 2026-09-04 against
 # a prefix pinned `^0.150.1` with 0.153.3 published: `npm install` resolved
@@ -742,11 +691,9 @@ cdx_version() {
   sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CDX_PKG" | head -n 1
 }
 CDX_HAVE=$(cdx_version)
-# THE DECISION IS NOT MADE HERE. `codexpin.decide` owns it so that this script
-# and update.ps1 cannot drift into disagreeing on one platform, and so the rule
-# is reachable by the test suite instead of only by running a deploy.
-# LINE-SEPARATED rather than the JSON update.ps1 reads back, because POSIX sh
-# has no JSON parser and a sed-based one would break on the first reason string
+# THE DECISION IS NOT MADE HERE. `codexpin.decide` owns it so the rule is
+# reachable by the test suite instead of only by running a deploy.
+# LINE-SEPARATED rather than JSON, because sh has no JSON parser and a sed-based one would break on the first reason string
 # containing a quote. `reason` is LAST so it may contain anything at all.
 CDX_OUT=$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from orgtree import codexpin; h=sys.argv[2]; d=codexpin.decide(h if h else None); print(d["action"]); print(codexpin.PIN); print(codexpin.PACKAGE); print(d["reason"])' "$ROOT/backend" "${CDX_HAVE:-}" 2>/dev/null)
 CDX_ACT=$(printf '%s\n' "$CDX_OUT" | sed -n '1p')
@@ -778,8 +725,8 @@ else
   test_codex_pin() {
     local v act
     v=$(cdx_version); [ -n "$v" ] || return 1
-    find "$CDX_DIR/node_modules/@openai" -type f -name 'codex' -o \
-         -type f -name 'codex.exe' 2>/dev/null | head -n 1 | grep -q . || return 1
+    find "$CDX_DIR/node_modules/@openai" -type f -name 'codex' 2>/dev/null \
+      | head -n 1 | grep -q . || return 1
     act=$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from orgtree import codexpin; print(codexpin.decide(sys.argv[2], sys.argv[3])["action"])' \
       "$ROOT/backend" "$v" "$CDX_WANT" 2>/dev/null | head -n 1)
     [ "$act" = keep ]
@@ -836,12 +783,8 @@ if [ "$EXPOSE" = 1 ]; then
 fi
 
 # Detach properly. The child's own stdout/stderr go to the log files, but the
-# SUBSHELL's descriptors have to be closed off too: under MSYS/Git Bash a
-# backgrounded grandchild keeps the parent's pipe alive regardless of its own
-# redirections, so `./update.sh | tee log` would hang forever after the script
-# had finished all its work (reproduced in isolation 2026-08-03; `disown` does
-# not fix it and `setsid` does not exist there). Redirecting the subshell is
-# what actually releases it, and it costs nothing on Linux/macOS.
+# SUBSHELL's descriptors have to be redirected too, or `./update.sh | tee log`
+# keeps the pipe open after the script has finished all its work.
 ( cd "$ROOT/backend" && nohup "$PY" "${API_ARGS[@]}" >"$OUT" 2>"$ERRLOG" </dev/null & ) >/dev/null 2>&1
 
 # -- 5 - health check -------------------------------------------------------

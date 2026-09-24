@@ -513,23 +513,16 @@ mailserver, because it applies to any unattended orgtree.
 
 ### 9.3 Boot-start is not crash-restart
 
-A boot trigger covers the reboot; it does nothing for the backend dying at 04:00. Both are needed:
+A boot trigger covers the reboot; it does nothing for the backend dying at 04:00. Both are needed.
+One systemd **user** unit (`systemctl --user enable --now orgtree`, plus `loginctl enable-linger
+<user>` so it runs without a login session) with `Restart=always` and `RestartSec=10` covers both.
 
-- **Windows:** Task Scheduler's *restart on failure* handles the crash; the *At log on* trigger
-  handles the boot.
-- **Linux:** one systemd **user** unit (`systemctl --user enable --now orgtree`, plus
-  `loginctl enable-linger <user>` so it runs without a login session) with `Restart=always` and
-  `RestartSec=10` covers both. This is markedly cleaner than the Windows path, and worth saying
-  out loud: **a Linux box is the better host for an unattended instance**, and if the mailserver
-  makes autonomous orgs a real workflow, that is where they should live.
-- **macOS:** a launchd *user agent* with `KeepAlive` — same shape as the systemd unit.
-
-⚠ Whatever launches it must not fight a manually-run instance. Both deploy scripts already have the
+⚠ Whatever launches it must not fight a manually-run instance. `update.sh` already has the
 stale-backend guard and a `listeners()` port check (D-42, D-47) — the autostart entry should reuse
-the same script rather than invoke Python directly, so that logic is not duplicated into a third
-place. Note also how each script detaches (`update.ps1:168` `Start-Process -WindowStyle Hidden`;
-`update.sh:265` a redirected subshell, the shape that fixed the MSYS pipe-hold) — an autostart
-wrapper that re-implements detachment will reintroduce that bug.
+the same script rather than invoke Python directly, so that logic is not duplicated into a second
+place. Note also how `update.sh` detaches (a redirected subshell, the shape that keeps a piped
+invocation from hanging) — an autostart wrapper that re-implements detachment will reintroduce that
+bug.
 
 ### 9.4 What must be true of the *org*, not just the process
 

@@ -30,21 +30,20 @@ Every shape below starts here.
 | **One or more provider CLIs**, installed and authenticated | Claude Code, Codex, and Antigravity are supported. Install the CLI for every provider whose tiers you plan to hire; turns use that provider's subscription or API account — **real usage costs real money**. OpenRouter needs no CLI of its own: an API key entered in App settings → Providers runs its models through Claude Code, billed to the key's prepaid credits. |
 | **Python 3.11+** | |
 | **Node.js 18+** | builds the frontend and runs the JavaScript-based provider CLIs where needed |
-| **Windows, macOS, or Linux** | the host-mode core (ledger, turns, canvas, kiosk URLs) runs anywhere; developed and battle-tested on Windows, POSIX paths handled but less traveled |
+| **Linux** | the host OS |
 | **Docker Desktop, WSL2 backend** | only for **sandboxed orgs** (kiosks default the sandbox on) — each org's virtual disk is loop-mounted inside the docker-desktop WSL distro, read via `\\wsl.localhost` |
 
 ### Install
 
-The update scripts do this whole sequence for you on a fresh clone (including creating the
-virtualenv) — `update.ps1` on Windows, `./update.sh` on Linux/macOS/Git Bash, step-for-step
-equivalents. By hand:
+`./update.sh` does this whole sequence for you on a fresh clone, including creating the virtualenv.
+By hand:
 
 ```bash
 git clone https://github.com/Maurdekye/claude-orgtree.git
 cd claude-orgtree
 
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 
 pip install -r requirements.txt
 
@@ -88,8 +87,7 @@ npm install --prefix ~/orgtree/codex @openai/codex
 npx --prefix ~/orgtree/codex codex login
 
 # Antigravity: flash (seat 1), pro (2) — Google's own installer, then sign in once
-winget install Google.AntigravityCLI                          # Windows
-curl -fsSL https://antigravity.google/cli/install.sh | bash   # macOS / Linux
+curl -fsSL https://antigravity.google/cli/install.sh | bash
 agy
 ```
 
@@ -108,9 +106,8 @@ and runs through Claude Code against openrouter.ai, billed to the key's
 prepaid credits. Anthropic models run as first-class; other vendors are
 best-effort (Claude Code's tool scaffolding is tuned for Claude).
 
-**Updating, once installed:** `update.ps1` (or double-click `update.cmd`) on Windows, `./update.sh`
-on Linux/macOS (also runs under Git Bash on Windows). Both pull, rebuild the UI, install any new
-dependencies, and restart the backend in the background with a health check.
+**Updating, once installed:** `./update.sh`. It pulls, rebuilds the UI, installs any new dependencies,
+and restarts the backend in the background with a health check.
 
 ---
 
@@ -121,7 +118,7 @@ and none of the sections that follow. It is a persistent, visual organization
 of Claude Code, Codex, and Antigravity agents running through the provider CLIs
 installed on this host (`README.md`).
 
-1. Start the backend (`python -m orgtree.api`, or `update.ps1`/`update.sh` if already installed)
+1. Start the backend (`python -m orgtree.api`, or `./update.sh` if already installed)
    and open **http://127.0.0.1:7360**.
 2. Create an organization — the collapsed creation form is just a name and a folder grant; leave
    the `advanced` disclosure closed (that's where kiosk, sandbox, and the mailserver connection
@@ -251,25 +248,28 @@ definition can set the variable directly; nothing an agent could write — no or
 org doc, **or environment variable** can turn it on"). That's stale as of the 2026-08-04 ruling —
 the mechanism above is current. Worth reconciling in that file.
 
-**For a kiosk**, instead set `ORGTREE_PUBLIC_PORT` (update.ps1/update.sh do this by default) — a
+**For a kiosk**, instead set `ORGTREE_PUBLIC_PORT` (`update.sh` does this by default) — a
 separate `PublicGateway` ASGI wrapper (`api.py:241-244`) that resolves `/k/<token>` only and 404s
 everything else: no org list, no discovery, no admin surface at all reachable from it.
 
 ### Fixed hostname
 
-`expose.ps1` is the zero-setup path — it opens a **Cloudflare quick tunnel**:
+A **Cloudflare quick tunnel** is the zero-setup path. Install
+[`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/),
+then:
 
-```powershell
-.\expose.ps1            # public listener on the default port 7361
-.\expose.ps1 -Port 7362
+```bash
+cloudflared tunnel --url http://localhost:7361    # the public listener's default port
+# copy the printed https://<random>.trycloudflare.com URL, then:
+echo 'https://<random>.trycloudflare.com' > "${ORGTREE_DATA:-$HOME/orgtree}/.public_origin"
 ```
 
-No account, no router config, works behind NAT. It downloads `cloudflared` once, and kiosk share
-URLs on the admin dashboard automatically pick up the live tunnel hostname
-(`<data>/.public_origin`, re-read on a short TTL — `api.py:396-400`).
+No account, no router config, works behind NAT. Kiosk share URLs on the admin dashboard pick up the
+hostname in `<data>/.public_origin` (re-read on a short TTL — `api.py` `_public_origin`). Delete the
+file when the tunnel stops. Never tunnel the admin port (7360): it has no password, token or login.
 
 ⚠ **This is not actually a fixed hostname.** The `*.trycloudflare.com` address is random and **dies
-with the window** — restart the tunnel and you get a new one. It's built for "share this with
+with `cloudflared`** — restart the tunnel and you get a new one. It's built for "share this with
 someone right now," not a stable address to bookmark or put in DNS.
 
 **For a genuinely fixed hostname**, set `ORGTREE_PUBLIC_ORIGIN` yourself — it wins over the tunnel
@@ -333,8 +333,7 @@ above is fine for a first run but don't rely on it long-term.
   ```
 
 **Run on startup:** `restart: unless-stopped` in the compose file gives start-on-boot for free,
-*once Docker itself starts with the machine* — Docker Desktop's default on Windows, or
-`systemctl enable docker` on Linux.
+*once Docker itself starts with the machine* (`systemctl enable docker`).
 
 **Also run once per machine, right after this:** `python install-hook.py` (from inside `hub/`) —
 wires every future Claude Code session on this machine to onboard itself onto the hub
@@ -463,40 +462,22 @@ Two different things share this name — pick the one you mean:
 
 **The orgtree *instance* itself** (this is the one for a headless setup):
 
-- **Windows** — `tools\install-autostart.ps1` registers two Scheduled Tasks:
-  ```powershell
-  powershell -ExecutionPolicy Bypass -File tools\install-autostart.ps1
-  ```
-  - `orgtree-deploy`, trigger **at logon** → the full `update.ps1` (pull, build, restart) —
-    boot-start.
-  - `orgtree-ensure`, trigger **every 5 minutes** → `update.ps1 -EnsureUp`, a lightweight
-    watchdog. This second task exists because `update.ps1` deliberately detaches the backend and
-    exits — Task Scheduler's own restart-on-failure watches a task that already *succeeded*, so it
-    never notices the backend dying later. `-EnsureUp` checks the port and only relaunches if
-    nothing's listening — no pull, no rebuild.
-  - The default 3-day execution-time limit is removed programmatically (an unattended backend
-    would otherwise be silently killed on day three).
-  - **Still manual**, printed by the script itself: enable auto-login for this Windows user (the
-    logon trigger needs an actual logon to fire), and set Docker Desktop to start at login if any
-    org here is sandboxed.
-  - Uninstall: `tools\install-autostart.ps1 -Uninstall`.
+`tools/install-autostart.sh` installs one systemd **user** unit:
 
-- **Linux** — `tools/install-autostart.sh` installs one systemd **user** unit:
-  ```sh
-  tools/install-autostart.sh
-  ```
-  Simpler than the Windows side because systemd already supervises the process directly —
-  `Restart=always` is genuine crash-restart, no separate watchdog task needed. For a box with
-  **nobody ever logged in**, additionally run once: `loginctl enable-linger $USER` (a user unit
-  otherwise stops when the last session for that user ends). Deploys become `git pull` + build,
-  then `systemctl --user restart orgtree`; don't also run `update.sh` manually at the same time.
-  Uninstall: `tools/install-autostart.sh uninstall`.
+```sh
+tools/install-autostart.sh
+```
 
-  ⚠ Both platforms' installers pin `~/.claude/.credentials.json` resolution: a Windows *Service*
-  running as `LocalSystem`, or any equivalent that isn't the real logged-in/lingering user, resolves
-  a **different home directory** and every turn fails — confusingly late, not at startup. Both
-  scripts run explicitly as the invoking user for exactly this reason; don't "improve" this into a
-  system-level service.
+systemd supervises the process directly — `Restart=always` is genuine crash-restart, so no separate
+watchdog is needed. For a box with **nobody ever logged in**, additionally run once: `loginctl
+enable-linger $USER` (a user unit otherwise stops when the last session for that user ends). Deploys
+become `git pull` + build, then `systemctl --user restart orgtree`; don't also run `update.sh`
+manually at the same time. Uninstall: `tools/install-autostart.sh uninstall`.
+
+⚠ The installer pins `~/.claude/.credentials.json` resolution: a system-level service, or anything
+else that isn't the real logged-in/lingering user, resolves a **different home directory** and every
+turn fails — confusingly late, not at startup. The unit runs as the invoking user for exactly this
+reason; don't "improve" this into a system-level service.
 
 **The mailserver hub** (only relevant if this box also hosts it): the compose file's `restart:
 unless-stopped` is enough on its own once Docker itself is set to start with the machine — see §3.

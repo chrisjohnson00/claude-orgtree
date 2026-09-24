@@ -259,7 +259,7 @@ ledger, supervisor, the gateways, or the canvas.
   has.** The update stops and restarts the backend, which tears down the very
   turn that asked for it, so any update script spawned as a child of an
   agent's own shell dies mid-flight with its session. Measured on a peer
-  install 2026-08-09 (neoja): an agent ran `update.ps1` from a backgrounded
+  install 2026-08-09 (neoja): an agent ran the update script from a backgrounded
   shell job, the log stopped at `== building the UI ==`, the backend never
   restarted, and the repo was left advanced with the old code still running.
   An OPERATOR's console outlives the restart; an agent has no console that
@@ -467,11 +467,8 @@ ledger, supervisor, the gateways, or the canvas.
   `os.replace` over a momentarily-open file.
 - **A bare `python -m orgtree.api` silently DROPS the public listener** —
   the 0.0.0.0 gateway starts only when `ORGTREE_PUBLIC_PORT` is set, which
-  `update.ps1` does (7361) and a manual restart forgets. Manual restart =
-  set the env + redirect logs + verify BOTH ports listen. Related deploy
-  artifact: `update.ps1` never "hangs" — the spawned backend inherits the
-  console pipe, so a piped invocation waits forever after the script is
-  done; run it unpiped or redirect to a file.
+  `update.sh` does (7361) and a manual restart forgets. Manual restart =
+  set the env + redirect logs + verify BOTH ports listen.
 
 ## Public surface
 

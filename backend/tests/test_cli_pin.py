@@ -358,7 +358,7 @@ print("\n§5  the update scripts read the pin from the code")
 
 
 def clipin_imports_nothing() -> None:
-    """The whole reason it is its own module. `update.ps1`/`update.sh` import
+    """The whole reason it is its own module. `update.sh` imports
     it at a point in the deploy where nothing else is known to be healthy, so
     it must not be able to fail for a reason unrelated to the pin. Re-imported
     in a clean subprocess because this process has already loaded the world."""
@@ -379,56 +379,51 @@ def pin_is_an_exact_version() -> None:
     assert clipin.PACKAGE == "@anthropic-ai/claude-code"
 
 
-def both_scripts_read_it_from_clipin() -> None:
+def update_sh_reads_it_from_clipin() -> None:
     """⚠ THE DRIFT THIS PREVENTS: a version written down twice is a machine
     that reports one number and runs another.
 
-    The guard is on the INSTALL SPEC, not on the whole file: both scripts are
+    The guard is on the INSTALL SPEC, not on the whole file: the script is
     thick with prose naming versions that were measured once (`2.1.31` on a
     machine whose runtime was the `2.1.220` pin, `esbuild 0.25.12`), and a
     blanket "no version literals" rule would forbid recording evidence. What
     must never be a literal is the thing npm is actually handed."""
-    for rel in ("update.ps1", "update.sh"):
-        src = read(rel)
-        assert "clipin.PIN" in src, rel
-        specs = re.findall(r"@anthropic-ai/claude-code@(\S+)", src)
-        assert specs, rel
-        for spec in specs:
-            assert spec.startswith("$"), (rel, spec)
+    src = read("update.sh")
+    assert "clipin.PIN" in src
+    specs = re.findall(r"@anthropic-ai/claude-code@(\S+)", src)
+    assert specs
+    for spec in specs:
+        assert spec.startswith("$"), spec
 
 
-def both_scripts_pin_exactly_and_never_downgrade() -> None:
+def update_sh_pins_exactly_and_never_downgrades() -> None:
     """Two properties the migration rests on, read out of the scripts because
-    neither can be exercised without a deploy: `--save-exact` (the fleet's
+    they cannot be exercised without a deploy: `--save-exact` (the fleet's
     existing installs carry a CARET range, so a re-install drifts with the
     registry — the opposite of a pin), and the floor comparison that leaves a
     NEWER CLI alone rather than rolling an operator backwards."""
-    for rel in ("update.ps1", "update.sh"):
-        src = read(rel)
-        assert "--save-exact" in src, rel
-        assert "NEWER" in src, rel
+    src = read("update.sh")
+    assert "--save-exact" in src
+    assert "NEWER" in src
 
 
 def the_install_happens_while_nothing_is_running() -> None:
-    """On Windows a running process holds its own image open, so npm cannot
-    overwrite bin\\claude.exe while a turn is in flight. The pin step must sit
-    between the stop and the start — checked by ORDER in the file, which is the
+    """Replacing the CLI while a turn is in flight swaps it out from under a
+    running process. The pin step must sit between the stop and the start — checked by ORDER in the file, which is the
     only thing that makes it true."""
-    for rel, stop, start in (
-            ("update.ps1", "stopping old backend", "Start-Process -FilePath $py"),
-            ("update.sh", "stopping old backend", "nohup \"$PY\"")):
-        src = read(rel)
-        i_stop, i_pin, i_start = (src.index(stop), src.index("== claude cli =="),
-                                  src.index(start))
-        assert i_stop < i_pin < i_start, (rel, i_stop, i_pin, i_start)
+    src = read("update.sh")
+    i_stop, i_pin, i_start = (src.index("stopping old backend"),
+                              src.index("== claude cli =="),
+                              src.index("nohup \"$PY\""))
+    assert i_stop < i_pin < i_start, (i_stop, i_pin, i_start)
 
 
 check("clipin imports nothing but itself", clipin_imports_nothing)
 check("PIN is an exact version of the right package", pin_is_an_exact_version)
-check("neither update script carries its own version literal",
-      both_scripts_read_it_from_clipin)
-check("both pin exactly and refuse to roll a newer CLI backwards",
-      both_scripts_pin_exactly_and_never_downgrade)
+check("update.sh carries no version literal of its own",
+      update_sh_reads_it_from_clipin)
+check("it pins exactly and refuses to roll a newer CLI backwards",
+      update_sh_pins_exactly_and_never_downgrades)
 check("the pin install sits between the stop and the start",
       the_install_happens_while_nothing_is_running)
 

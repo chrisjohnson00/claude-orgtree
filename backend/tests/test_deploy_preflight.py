@@ -6,9 +6,8 @@ WHAT THIS SUITE IS.  Two kinds of check, and the difference matters.
     subprocess against data roots this file builds, and its exit code is the
     assertion.  These are not text searches; they would catch a rewrite that
     kept every keyword and changed every answer.
-  * §4-§5 are TEXT PINS on `update.ps1` / `update.sh` / `cutover_deploy.ps1`,
-    because a PowerShell deploy script cannot be executed from here without
-    stopping a backend.  They pin the handful of properties that were
+  * §4-§5 are TEXT PINS on `update.sh`, because the deploy script cannot be
+    executed from here without stopping a backend.  They pin the handful of properties that were
     established by reading and that a later edit would silently undo -- above
     all THE ORDER: the pre-flight must sit after the pull and before the stop.
 
@@ -44,9 +43,7 @@ for _s in (sys.stdout, sys.stderr):
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 PREFLIGHT = os.path.join(ROOT, "tools", "preflight_store.py")
-UPDATE_PS1 = os.path.join(ROOT, "update.ps1")
 UPDATE_SH = os.path.join(ROOT, "update.sh")
-CUTOVER_PS1 = os.path.join(ROOT, "tools", "cutover_deploy.ps1")
 STORE_PY = os.path.join(ROOT, "backend", "orgtree", "store.py")
 
 PROCEED, MIGRATE, MIXED, MISMATCH, UNKNOWN = 0, 1, 2, 3, 4
@@ -80,13 +77,10 @@ def read(p: str) -> str:
 def code(p: str, marks=("#",)) -> str:
     """`p` with every whole-line comment removed.
 
-    ⚠ NOT TIDINESS -- copied from `test_cutover_deploy.py`, where it was
-    learned the hard way.  Every text check below searches this, because the
-    files being searched DESCRIBE THEIR OWN BEHAVIOUR in comments: a search for
-    the line that does a thing also matches the paragraph explaining it, so
-    commenting the line out leaves the check green.  `update.ps1` in particular
-    now carries a long comment block about the pre-flight sitting directly
-    above the pre-flight.
+    ⚠ NOT TIDINESS.  Every text check below searches this, because the file
+    being searched DESCRIBES ITS OWN BEHAVIOUR in comments: a search for the
+    line that does a thing also matches the paragraph explaining it, so
+    commenting the line out leaves the check green.
     """
     out = []
     for ln in read(p).splitlines():
@@ -102,7 +96,6 @@ def code(p: str, marks=("#",)) -> str:
 # in the line that merely COMPUTES the script's path.  Commenting out the
 # actual call left all four order checks GREEN (mutation-tested 2026-09-04
 # while writing this suite).  Pin against the thing that actually runs.
-PS_CALL = "& $py $preflight --data"
 SH_CALL = '"$PY" "$PREFLIGHT" --data'
 
 
@@ -195,8 +188,7 @@ def a_sqlite_root_under_a_json_pin_says_mismatch() -> None:
 
 def a_json_root_under_a_json_pin_proceeds() -> None:
     """⚠ THE GUARD A CORRECT DEPLOY MUST NOT TRIP.  An install that has
-    deliberately stayed on JSON -- including the one `cutover_deploy.ps1`'s
-    pre-migration recovery creates by pinning ORGTREE_STORE=json -- deploys
+    deliberately stayed on JSON by pinning ORGTREE_STORE=json deploys
     exactly as it did before any of this existed.  If this check ever goes
     red, the automatic upgrade has started firing at installs that did not
     need it."""
@@ -297,30 +289,11 @@ def the_root_shapes_are_the_shapes_a_real_migration_leaves() -> None:
 
 # ------------------------------------------- §4  WHERE the call site sits --
 
-def the_windows_preflight_runs_after_the_pull_and_before_the_stop() -> None:
-    t = code(UPDATE_PS1)
-    pull = at(t, "git pull --ff-only")
-    pre = at(t, PS_CALL)
-    stop = at(t, "Stop-Process -Id $p -Force")
-    assert pull >= 0 and pre >= 0 and stop >= 0, (pull, pre, stop)
-    assert pull < pre, (
-        "the pre-flight runs BEFORE the pull, so on an install still on the "
-        "old JSON-defaulting code it reads the OLD default, finds nothing to "
-        "do, and is inert on exactly the population it exists for")
-    assert pre < stop, (
-        "the pre-flight runs AFTER the backend is stopped. An install that "
-        "stops first and then discovers it cannot deploy is DOWN; one that "
-        "decides first is still serving")
 
 
-def the_windows_build_does_not_run_before_the_decision() -> None:
-    """Refusing or handing off after `npm run build` leaves a still-running
-    old backend serving a freshly rebuilt UI it was not built against."""
-    t = code(UPDATE_PS1)
-    assert at(t, PS_CALL) >= 0 and at(t, PS_CALL) < at(t, "npm run build")
 
 
-def the_posix_preflight_runs_after_the_pull_and_before_the_stop() -> None:
+def the_preflight_runs_after_the_pull_and_before_the_stop() -> None:
     t = code(UPDATE_SH)
     pull = at(t, "git pull --ff-only")
     pre = at(t, SH_CALL)
@@ -329,7 +302,7 @@ def the_posix_preflight_runs_after_the_pull_and_before_the_stop() -> None:
     assert pull < pre < stop, (pull, pre, stop)
 
 
-def the_posix_migration_happens_between_the_stop_and_the_start() -> None:
+def the_migration_happens_between_the_stop_and_the_start() -> None:
     """A data root may only be converted while nothing is holding it."""
     t = code(UPDATE_SH)
     stop = at(t, 'echo "stopping old backend')
@@ -341,55 +314,15 @@ def the_posix_migration_happens_between_the_stop_and_the_start() -> None:
 
 # ------------------------------------------ §5  the couplings and the loop --
 
-def the_windows_handoff_releases_the_mutex_before_launching() -> None:
-    """`cutover_deploy.ps1` takes the SAME `Global\\orgtree-update` mutex with
-    WaitOne(0).  Handing off while still holding it means the wrapper exits 3
-    two seconds later and the launcher reports the cutover as having died."""
-    t = code(UPDATE_PS1)
-    rel = at(t, "$mutex.ReleaseMutex(); $mutexHeld = $false")
-    spawn = at(t, "tools\\cutover_deploy.py")
-    assert rel >= 0, "the handoff no longer releases the mutex explicitly"
-    assert spawn >= 0 and rel < spawn, (rel, spawn)
 
 
-def the_wrapper_stops_its_children_handing_back() -> None:
-    """`cutover_deploy.ps1` step 5 runs `update.ps1`, and `update.ps1` hands
-    JSON roots to `cutover_deploy.py`.  The cycle is broken by construction,
-    not by reasoning about what the root looks like by then."""
-    assert "$env:ORGTREE_NO_AUTOCUTOVER = '1'" in code(CUTOVER_PS1), (
-        "the wrapper no longer disarms the hand-off in its children")
-    assert "$env:ORGTREE_NO_AUTOCUTOVER" in code(UPDATE_PS1), (
-        "update.ps1 no longer honours the recursion guard the wrapper sets")
+def the_automatic_upgrade_can_be_opted_out_of() -> None:
     assert "ORGTREE_NO_AUTOCUTOVER" in code(UPDATE_SH), (
         "update.sh offers no way to opt out of the automatic upgrade")
 
 
-def the_five_minute_watchdog_never_starts_a_cutover() -> None:
-    """`-EnsureUp` exists to get a dead backend serving again in seconds, and
-    it fires every five minutes whether or not the last one finished.  Its leg
-    brings the install up in the format the root is actually in; the full
-    deploy does the upgrade."""
-    t = code(UPDATE_PS1)
-    ensure = at(t, "} elseif ($EnsureUp) {")
-    handoff = at(t, "tools\\cutover_deploy.py")
-    assert ensure >= 0 and handoff >= 0, (ensure, handoff)
-    assert ensure < handoff, (
-        "the -EnsureUp arm no longer precedes the hand-off arm -- check that "
-        "the watchdog cannot reach the cutover")
-    assert "$env:ORGTREE_STORE = 'json'" in t, (
-        "the -EnsureUp arm no longer brings a JSON root up on JSON, so the "
-        "install stays DOWN until someone runs a full deploy")
 
 
-def the_watchdogs_only_disclosure_is_a_file() -> None:
-    """`tools/install-autostart.ps1` runs the ensure task under
-    `conhost --headless` with NO output redirection, so everything that arm
-    prints is lost.  A file in the data root is the only place an operator can
-    find out afterwards that their install is still on the old format."""
-    assert "--headless" in code(os.path.join(ROOT, "tools",
-                                             "install-autostart.ps1"))
-    assert "UPGRADE-PENDING.txt" in code(UPDATE_PS1), (
-        "the ensure arm no longer leaves anything an operator can find")
 
 
 def the_deployed_backend_still_never_receives_the_migrate_flag() -> None:
@@ -408,9 +341,6 @@ def the_deployed_backend_still_never_receives_the_migrate_flag() -> None:
         assert "cutover.py" in ln or '"$CUT"' in ln, (
             "ORGTREE_MIGRATE appears on a line that is not the migrate "
             "command: %s" % ln.strip())
-    assert "ORGTREE_MIGRATE" not in code(UPDATE_PS1), (
-        "update.ps1 mentions the migrate flag; on Windows it belongs only in "
-        "cutover_deploy.ps1's one-shot .cmd file")
 
 
 # ------------------------- §5b  "no way back" is said, not left to be found --
@@ -424,26 +354,12 @@ def the_deployed_backend_still_never_receives_the_migrate_flag() -> None:
 MARKER = "NO-ROLLBACK-ROUTE.txt"
 
 
-def both_implementations_record_a_missing_rollback_route() -> None:
-    for path, name in ((CUTOVER_PS1, "cutover_deploy.ps1"), (UPDATE_SH, "update.sh")):
-        t = code(path)
-        assert MARKER in t, (
-            "%s no longer writes the no-rollback marker, so an install that "
-            "came up after a failed export-verify looks entirely normal" % name)
+def the_deploy_records_a_missing_rollback_route() -> None:
+    assert MARKER in code(UPDATE_SH), (
+        "update.sh no longer writes the no-rollback marker, so an install "
+        "that came up after a failed export-verify looks entirely normal")
 
 
-def the_marker_is_written_where_the_fact_becomes_true() -> None:
-    """Written at the export-verify failure, not in the recovery arm that
-    happens to bring the install back up: the fact has to survive the recovery
-    going wrong, this script dying, or the backend never coming back."""
-    t = code(CUTOVER_PS1)
-    exp = at(t, 'Say "EXPORT-VERIFY FAILED')
-    write = at(t, "Set-NoRollbackMarker ")
-    recov = at(t, 'Recover "cutover.py export-verify failed')
-    assert exp >= 0 and write >= 0 and recov >= 0, (exp, write, recov)
-    assert exp < write < recov, (
-        "the marker is no longer written between the failure and the "
-        "recovery: %s" % ((exp, write, recov),))
 
 
 def the_marker_is_cleared_when_an_export_does_verify() -> None:
@@ -452,64 +368,33 @@ def the_marker_is_cleared_when_an_export_does_verify() -> None:
     successfully would still find a file telling them they have no way back,
     and would learn to ignore it -- and then it is worth nothing to the
     install that really has none."""
-    ps = code(CUTOVER_PS1)
-    ok = at(ps, "every org exported and re-read")
-    # the LAST call site, because the function's own definition comes first
-    call = ps.rfind("Clear-NoRollbackMarker")
-    assert ok >= 0 and call >= 0, (ok, call)
-    assert ok < call, (
-        "cutover_deploy.ps1 clears the marker somewhere other than the "
-        "export-verify SUCCESS path, so a stale warning outlives the run "
-        "that disproved it")
     sh = code(UPDATE_SH)
     assert 'rm -f "$NO_ROLLBACK"' in sh, "update.sh never clears the marker"
 
 
-def a_recovered_install_with_no_route_back_is_not_reported_as_plain_recovered() -> None:
-    """The green 'RECOVERED: orgtree is UP on SQLite' banner is the only way an
-    install comes back after a failed export-verify.  It must not swallow the
-    fact that a whole safety net is missing."""
-    t = code(CUTOVER_PS1)
-    banner = at(t, "RECOVERED: orgtree is UP on SQLite, carrying its orgs.")
-    guard = at(t, "if ($script:noRollbackRoute) {")
-    assert banner >= 0 and guard >= 0, (banner, guard)
-    assert banner < guard, (
-        "the no-rollback warning no longer follows the recovered banner")
-    assert "$script:rc = 24" in t, (
-        "'recovered' and 'recovered with no way back' report the same exit "
-        "code, so a caller and a log cannot tell them apart")
 
 
-def neither_implementation_claims_premigration_is_a_rollback() -> None:
+def the_marker_does_not_claim_premigration_is_a_rollback() -> None:
     """The `.json.premigration` files sit right beside the databases and look
     exactly like a backup.  They predate every write since the migration.  An
     operator reading a no-rollback warning is precisely the person about to
     reach for them."""
-    for path in (CUTOVER_PS1, UPDATE_SH):
-        t = code(path)
-        i = t.find(MARKER)
-        assert i >= 0
-        # ⚠ QUOTES AND COMMAS ARE STRIPPED TOO, NOT JUST WHITESPACE, and that
-        # is not cosmetic.  This check first searched for the literal "NOT a
-        # rollback" and failed against cutover_deploy.ps1, where the message is
-        # a PowerShell string ARRAY and the sentence wraps mid-phrase across two
-        # elements: `are NOT a",` / `"  rollback: they predate`.  Collapsing
-        # whitespace alone still leaves `a", "rollback` between the words.  The
-        # code was right both times and the needle was wrong -- a needle
-        # sensitive to how a message happens to be line-wrapped fails for the
-        # wrong reason today and passes for the wrong reason tomorrow.
-        near = re.sub(r'[",]+', " ",
-                      t[max(0, i - 4000):i + 4000])
-        near = " ".join(near.split())
-        assert "premigration" in near and "NOT a rollback" in near, (
-            "%s writes the marker without warning off the premigration files"
-            % path)
+    t = code(UPDATE_SH)
+    i = t.find(MARKER)
+    assert i >= 0
+    # Quotes and commas are stripped too, so the needle does not depend on
+    # how the message happens to be line-wrapped or split into strings.
+    near = re.sub(r'[",]+', " ", t[max(0, i - 4000):i + 4000])
+    near = " ".join(near.split())
+    assert "premigration" in near and "NOT a rollback" in near, (
+        "update.sh writes the marker without warning off the premigration "
+        "files")
 
 
 # ------------------------------------------------------------- §6 controls --
 
 def the_files_under_test_exist_and_are_not_trivial() -> None:
-    for p in (PREFLIGHT, UPDATE_PS1, UPDATE_SH, CUTOVER_PS1, STORE_PY):
+    for p in (PREFLIGHT, UPDATE_SH, STORE_PY):
         assert os.path.getsize(p) > 500, "%s is missing or trivial" % p
 
 
@@ -518,11 +403,11 @@ def the_comment_stripper_actually_strips() -> None:
     lines they would all go back to matching the paragraphs that DESCRIBE the
     behaviour, and none of them could fail."""
     assert code.__doc__
-    stripped = code(UPDATE_PS1)
-    assert "# ⚠⚠ WHY THIS IS *HERE*" not in stripped, (
+    stripped = code(UPDATE_SH)
+    assert "#!/usr/bin/env bash" not in stripped, (
         "code() is leaving comments in, so every text check can match a "
         "description of the code instead of the code")
-    assert PS_CALL in stripped, "code() has eaten the actual code"
+    assert SH_CALL in stripped, "code() has eaten the actual code"
 
 
 def the_position_finder_can_actually_order_things() -> None:
@@ -530,8 +415,8 @@ def the_position_finder_can_actually_order_things() -> None:
     comparisons would still be arithmetic and would still pass."""
     assert at("aXbY", "X") == 1 and at("aXbY", "Y") == 3
     assert at("aXbY", "Z") == -1
-    t = code(UPDATE_PS1)
-    assert at(t, "git pull --ff-only") > 0 and at(t, PS_CALL) > 0
+    t = code(UPDATE_SH)
+    assert at(t, "git pull --ff-only") > 0 and at(t, SH_CALL) > 0
 
 
 def the_verdict_check_can_actually_fail() -> None:
@@ -547,12 +432,12 @@ def the_order_pin_would_notice_a_reordering() -> None:
     """A control on §4 itself: reorder a copy of the real file and prove the
     assertion the checks make actually goes false.  Pinning positions is only
     worth anything if a move is detectable."""
-    t = code(UPDATE_PS1)
-    pull, pre = at(t, "git pull --ff-only"), at(t, PS_CALL)
+    t = code(UPDATE_SH)
+    pull, pre = at(t, "git pull --ff-only"), at(t, SH_CALL)
     assert pull < pre
-    swapped = t[:pull] + PS_CALL + t[pull:]
+    swapped = t[:pull] + SH_CALL + t[pull:]
     assert not (at(swapped, "git pull --ff-only")
-                < at(swapped, PS_CALL)), (
+                < at(swapped, SH_CALL)), (
         "moving the pre-flight above the pull did NOT break the ordering "
         "assertion, so §4 cannot fail")
 
@@ -587,38 +472,23 @@ check("the fixtures carry what a real migration leaves behind",
       the_root_shapes_are_the_shapes_a_real_migration_leaves)
 
 print("\n== §4  WHERE the call site sits ==")
-check("windows: after the pull, before the stop",
-      the_windows_preflight_runs_after_the_pull_and_before_the_stop)
-check("windows: before the UI build",
-      the_windows_build_does_not_run_before_the_decision)
-check("posix: after the pull, before the stop",
-      the_posix_preflight_runs_after_the_pull_and_before_the_stop)
-check("posix: the migration is between the stop and the start",
-      the_posix_migration_happens_between_the_stop_and_the_start)
+check("after the pull, before the stop",
+      the_preflight_runs_after_the_pull_and_before_the_stop)
+check("the migration is between the stop and the start",
+      the_migration_happens_between_the_stop_and_the_start)
 
 print("\n== §5  the couplings and the loop ==")
-check("the handoff releases the mutex before launching the wrapper",
-      the_windows_handoff_releases_the_mutex_before_launching)
-check("the wrapper stops its children handing back",
-      the_wrapper_stops_its_children_handing_back)
-check("the 5-minute watchdog never starts a cutover",
-      the_five_minute_watchdog_never_starts_a_cutover)
-check("the watchdog's only disclosure is a file",
-      the_watchdogs_only_disclosure_is_a_file)
+check("the automatic upgrade can be opted out of",
+      the_automatic_upgrade_can_be_opted_out_of)
 check("the deployed backend still never receives ORGTREE_MIGRATE",
       the_deployed_backend_still_never_receives_the_migrate_flag)
 
 print("\n== §5b  a missing rollback route is said, not left to be found ==")
-check("both implementations record it",
-      both_implementations_record_a_missing_rollback_route)
-check("it is written where the fact becomes true",
-      the_marker_is_written_where_the_fact_becomes_true)
+check("the deploy records it", the_deploy_records_a_missing_rollback_route)
 check("it is cleared when an export does verify",
       the_marker_is_cleared_when_an_export_does_verify)
-check("a recovered install with no way back says so",
-      a_recovered_install_with_no_route_back_is_not_reported_as_plain_recovered)
-check("neither claims .premigration is a rollback",
-      neither_implementation_claims_premigration_is_a_rollback)
+check("it does not claim .premigration is a rollback",
+      the_marker_does_not_claim_premigration_is_a_rollback)
 
 print("\n== §6  controls ==")
 check("the files under test exist", the_files_under_test_exist_and_are_not_trivial)

@@ -21,7 +21,7 @@ WHERE IT LIVES AND WHY
 repo's existing home for operator scripts that are not part of the shipped
 package. It has to sit above both `backend/` and `frontend/` because it drives
 both, so neither of those is a candidate; the repo root is reserved for the
-handful of top-level entry points (`update.*`, `expose.ps1`).
+handful of top-level entry points (`update.sh`).
 
 HOW SUITES ARE FOUND — nothing is hardcoded
 -------------------------------------------

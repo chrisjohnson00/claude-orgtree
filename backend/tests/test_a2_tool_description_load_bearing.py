@@ -89,7 +89,7 @@ something the JSON schema already carries elsewhere. The reasoning per tool:
       a post-condition with a silent-failure shape close to orgtree_hire's
       kickoff trap: skip it and a forced restart leaves an org stalled with
       nothing pointing at why.
-    · "never run update.ps1 / update.sh yourself" — guards a documented
+    · "never run update.sh yourself" — guards a documented
       real failure ("measured on a peer install: the log stopped at
       'building the UI' and the backend never restarted").
     SAFE TO CUT / SHRINK: "one launch per 5 minutes machine-wide" — a rate
@@ -180,7 +180,7 @@ MARKERS: dict[str, dict[str, str]] = {
         "post-forced-restart silent-stall risk — mirrors hire's kickoff trap":
             "THE AGENTS DO NOT RESUME BY THEMSELVES",
         "guards a documented real half-updated-install failure":
-            "never run update.ps1 / update.sh yourself",
+            "never run update.sh yourself",
     },
 }
 

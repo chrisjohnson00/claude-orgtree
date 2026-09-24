@@ -49,8 +49,8 @@ behaviour, not an automatic migration.
 NOTHING HERE WRITES.  `ORGTREE_DATA` is pointed at a throwaway directory before
 the store is imported and the target root is passed explicitly to every call,
 which is the documented "claimed only — never migrated, never refused for JSON"
-path and the same trick `cutover_deploy.py --probe-claim` uses.  A pre-flight
-that could convert something is a pre-flight nobody could safely run.
+path.  A pre-flight that could convert something is a pre-flight nobody could
+safely run.
 """
 from __future__ import annotations
 
@@ -215,8 +215,8 @@ def inspect(root: str, repo: str) -> dict:
 
 
 # --------------------------------------------------------------- the telling
-# ⚠ THE RECIPE IS WRITTEN HERE AND NOWHERE ELSE.  update.ps1 and update.sh
-# print this script's output verbatim rather than restating it.  A procedure
+# ⚠ THE RECIPE IS WRITTEN HERE AND NOWHERE ELSE.  update.sh prints this
+# script's output verbatim rather than restating it.  A procedure
 # written in two places drifts, and the copy that drifts is the one nobody
 # re-reads (docs/sqlite-cutover.md's own §"If you get the order wrong" was
 # taught this in September 2026).  If the automatic path changes, it changes

@@ -2134,38 +2134,30 @@ def hermetic() -> None:
 
     def _the_scripts_still_offer_that_flag():
         """The flag itself is NOT deleted (D-142): nothing in this repo passes
-        it, but it stays declared for operators and scheduled 'only if there is
-        something new' jobs, and PowerShell hard-errors on an undeclared
-        switch. So both scripts must still declare it AND still exit on it —
-        a flag that is accepted and silently ignored is worse than none."""
+        it, but it stays for operators and scheduled 'only if there is
+        something new' jobs. So the script must still read it AND still exit
+        on it — a flag that is accepted and silently ignored is worse than
+        none."""
         repo = os.path.normpath(os.path.join(
             os.path.dirname(os.path.abspath(supervisor.__file__)), "..", ".."))
-        ps1 = open(os.path.join(repo, "update.ps1"), encoding="utf-8").read()
         sh = open(os.path.join(repo, "update.sh"), encoding="utf-8").read()
-        assert "$OnlyIfBehind" in ps1 and "[switch]$OnlyIfBehind" in ps1, \
-            "update.ps1 no longer declares the switch operators may pass"
         assert "ORGTREE_ONLY_IF_BEHIND" in sh, \
             "update.sh no longer reads the env var operators may set"
-        # the BRANCH, not the first mention — the param block names it too
-        for name, src, needle in (
-                ("update.ps1", ps1, "if ($OnlyIfBehind) {"),
-                ("update.sh", sh, 'ORGTREE_ONLY_IF_BEHIND:-')):
-            i = src.find(needle)
-            assert i > 0, f"{name} has no branch on the flag ({needle!r})"
-            assert "exit 0" in src[i:i + 400], \
-                f"{name} branches on the flag but does not EXIT — it would " \
-                f"fall through to the rebuild and restart anyway"
+        i = sh.find('ORGTREE_ONLY_IF_BEHIND:-')
+        assert i > 0, "update.sh has no branch on the flag"
+        assert "exit 0" in sh[i:i + 400], \
+            "update.sh branches on the flag but does not EXIT — it would " \
+            "fall through to the rebuild and restart anyway"
         # ⚠ and the DEFAULT path — the one the tool now takes — must redeploy
         # an unmoved HEAD rather than exiting. This is the script half of
         # D-142: if this line goes, the tool is silently gated again even
         # though it passes no flag.
-        for name, src in (("update.ps1", ps1), ("update.sh", sh)):
-            assert "redeploying anyway" in src, \
-                f"{name} lost the unflagged 'already up to date -- " \
-                f"redeploying anyway' path — a local commit cannot deploy"
+        assert "redeploying anyway" in sh, \
+            "update.sh lost the unflagged 'already up to date -- " \
+            "redeploying anyway' path — a local commit cannot deploy"
         # and a dirty tree is reported rather than silently changing the answer
-        assert "porcelain" in ps1 and "porcelain" in sh, \
-            "neither script reports a dirty working tree; the peer's log " \
+        assert "porcelain" in sh, \
+            "update.sh does not report a dirty working tree; the peer's log " \
             "could not say why the pull did nothing"
     check("selfrestart · the scripts keep the flag for operators, and "
           "redeploy an unmoved HEAD without it",
@@ -2177,8 +2169,8 @@ def hermetic() -> None:
         Reproduces the 2026-08-21 near miss exactly: mutate the mid-turn
         refusal away — which is what a bad revert or a future edit does — and
         drive the launch at a live spawn. Before the interlock this reached a
-        real `update.ps1`; nothing deployed only because the working tree
-        happened to be dirty and update.ps1 refused on its own account.
+        real deploy script; nothing deployed only because the working tree
+        happened to be dirty and the script refused on its own account.
 
         'The refusal fires first' is not a guarantee, it is the assumption
         that mutation disproved. So this asserts the guarantee that does not
@@ -2229,29 +2221,17 @@ def hermetic() -> None:
           _no_check_can_ever_start_a_real_deploy)
 
     def _detached_spawn_keeps_the_childs_output():
-        """☠ THE PEER'S ACTUAL BUG (neoja 2026-08-09), root-caused here rather
-        than on their machine: every Windows self-update logged NOTHING but the
-        Python-written banner, because DETACHED_PROCESS detaches the child from
-        the console and takes the redirected stdout handle with it. Measured
-        0/4 lines against CREATE_NO_WINDOW's 4/4.
-
-        No local deploy exercises this path — an operator runs update.ps1
-        through a shell that has a console — which is exactly why it survived
-        this long. So the flag is pinned, and on Windows the behaviour is
-        re-measured for real rather than asserted from the constant."""
+        """☠ A self-update that logs nothing but the Python-written banner
+        leaves the operator blind, and no local deploy exercises this path. So
+        the behaviour is measured for real rather than asserted."""
         assert not (0x00000008 & _spawn_flags()), \
             "DETACHED_PROCESS is back — the child's output will vanish again"
-        if os.name != "nt":
-            return
-        probe = os.path.join(TMP, "spawnprobe.ps1")
+        probe = os.path.join(TMP, "spawnprobe.sh")
         with open(probe, "w", encoding="utf-8") as f:
-            f.write('Write-Host "H"\nWrite-Output "O"\n'
-                    '& cmd /c echo N\n')
+            f.write('echo H\necho O >&2\nsh -c "echo N"\n')
         log = os.path.join(TMP, "spawnprobe.log")
         open(log, "wb").close()
-        supervisor._detached_spawn(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-File", probe], TMP, log)
+        supervisor._detached_spawn(["bash", probe], TMP, log)
         for _ in range(60):                       # the child is detached
             time.sleep(0.25)
             body = open(log, encoding="utf-8", errors="replace").read()

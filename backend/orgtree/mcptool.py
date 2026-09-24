@@ -440,7 +440,7 @@ TOOLS: list[dict[str, Any]] = [
             "their managers) or the work you interrupted just stops. Use it when "
             "the wait is worse than that — an urgent fix on a machine that never "
             "goes quiet. Otherwise use orgtree_prime_restart, which costs nobody "
-            "anything. ☞ USE THIS TOOL — never run update.ps1 / update.sh "
+            "anything. ☞ USE THIS TOOL — never run update.sh "
             "yourself from your own terminal. The update restarts the backend, "
             "which tears down the turn that launched it, so a script started from "
             "your shell dies mid-build and leaves the install half-updated "

@@ -1,6 +1,6 @@
 """The post-deploy state assertion: `tools/deploy_health.py`.
 
-WHAT IT GUARDS.  `update.ps1` used to end its deploy by asking `/api/orgs` for
+WHAT IT GUARDS.  The deploy script used to end its deploy by asking `/api/orgs` for
 an HTTP 200.  An empty list is a perfectly good 200, so a backend that came up
 carrying NONE of the install's orgs deployed green -- the exact sequence being:
 the SQLite cutover ships, the code is rolled back without the data, the JSON
@@ -16,7 +16,7 @@ seen green is a check nobody has tested.
     §1  the expectation: what the data root says must exist
     §2  the verdicts, end to end against a programmable /api/orgs
     §3  the budgets: it cannot hang a deploy
-    §4  BOTH deploy scripts run it, and neither settles for a 200
+    §4  the deploy script runs it, and does not settle for a 200
     §5  it is a SECOND source of truth (it imports no orgtree)
     §6  controls -- what would make the above vacuous
 
@@ -439,7 +439,7 @@ def an_unreadable_data_root_fails_the_deploy_rather_than_passing_it() -> None:
 
 
 def the_exit_codes_survive_the_process_boundary() -> None:
-    """update.ps1 reads `$LASTEXITCODE`, so the verdicts have to be real
+    """update.sh reads `$?`, so the verdicts have to be real
     process exit codes and not just return values."""
     root = data_root(*(s + ".db" for s in THREE))
     script = os.path.join(ROOT, "tools", "deploy_health.py")
@@ -483,58 +483,46 @@ def it_cannot_hang_the_deploy_when_the_state_never_settles() -> None:
     assert dt < 3.0, dt
 
 
-# ------------------------------------------------ §4  update.ps1 reads it ---
+# ------------------------------------------------ §4  update.sh reads it ----
 
 def read(rel: str) -> str:
     with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
         return fh.read()
 
 
-def both_deploy_scripts_run_the_check() -> None:
-    """A gate nobody calls is not a gate -- and the two lanes must not drift on
-    what "healthy" means, which is why this asserts BOTH rather than only the
-    one that happens to run on this machine."""
-    for name in ("update.ps1", "update.sh"):
-        src = read(name)
-        assert "deploy_health.py" in src, "%s never runs the health check" % name
-        assert "snapshot" in src, "%s never takes the pre-restart snapshot" % name
-        assert "verify" in src, "%s never verifies after the restart" % name
+def the_deploy_script_runs_the_check() -> None:
+    """A gate nobody calls is not a gate."""
+    src = read("update.sh")
+    assert "deploy_health.py" in src, "update.sh never runs the health check"
+    assert "snapshot" in src, "update.sh never takes the pre-restart snapshot"
+    assert "verify" in src, "update.sh never verifies after the restart"
 
 
-def neither_deploy_script_settles_for_a_200() -> None:
-    """The defect itself. On Windows the old rule was `$r.StatusCode -eq 200`
-    against `/api/orgs`; on the shell side it was `curl -fsS` treating any 2xx
-    as healthy. Neither may still be the thing that decides the deploy."""
-    ps1 = read("update.ps1")
-    assert "StatusCode -eq 200" not in ps1, (
-        "update.ps1 still decides deploy health on an HTTP status alone")
+def the_deploy_script_does_not_settle_for_a_200() -> None:
+    """The defect itself. The old rule was `curl -fsS` treating any 2xx from
+    `/api/orgs` as healthy. It may not still be the thing that decides the
+    deploy."""
     sh = read("update.sh")
     assert "curl -fsS" not in sh, (
         "update.sh still decides deploy health on a bare curl of /api/orgs")
 
 
-def both_deploy_scripts_fail_on_a_nonzero_verdict() -> None:
-    ps1 = read("update.ps1")
-    tail = ps1[ps1.index("deploy_health.py"):]
-    assert "$healthRc" in tail, "update.ps1 never captures the verify exit code"
-    assert "exit 1" in tail, "update.ps1 never fails the deploy on a red check"
+def the_deploy_script_fails_on_a_nonzero_verdict() -> None:
     sh = read("update.sh")
     tail = sh[sh.index("deploy_health.py"):]
     assert "HEALTH_RC" in tail, "update.sh never captures the verify exit code"
     assert "die " in tail, "update.sh never fails the deploy on a red check"
 
 
-def both_deploy_scripts_distinguish_every_verdict() -> None:
-    """All four exit codes have to be REACHABLE branches in each script. A
+def the_deploy_script_distinguishes_every_verdict() -> None:
+    """All four exit codes have to be REACHABLE branches in the script. A
     script that only tests for zero collapses "up and wrong", "never came up"
     and "could not tell" into one message, and the whole point of the split is
     that the operator does different things about each."""
-    for name, rcs in (("update.ps1", ("-eq 0", "-eq 1", "-eq 2")),
-                      ("update.sh", ("0)", "1)", "2)"))):
-        src = read(name)
-        tail = src[src.index("deploy_health.py"):]
-        for rc in rcs:
-            assert rc in tail, "%s never branches on %r" % (name, rc)
+    src = read("update.sh")
+    tail = src[src.index("deploy_health.py"):]
+    for rc in ("0)", "1)", "2)"):
+        assert rc in tail, "update.sh never branches on %r" % rc
 
 
 # ------------------------------- §5  a genuine second source of truth -------
@@ -670,15 +658,14 @@ check("it cannot hang when nothing ever answers",
 check("it cannot hang when the state never settles",
       it_cannot_hang_the_deploy_when_the_state_never_settles)
 
-print("\n== §4  both deploy scripts read it ==")
-check("update.ps1 and update.sh both run the check",
-      both_deploy_scripts_run_the_check)
-check("neither settles for a 200 any more",
-      neither_deploy_script_settles_for_a_200)
-check("both fail the deploy on a non-zero verdict",
-      both_deploy_scripts_fail_on_a_nonzero_verdict)
-check("both branch on every verdict, not just zero",
-      both_deploy_scripts_distinguish_every_verdict)
+print("\n== §4  the deploy script reads it ==")
+check("update.sh runs the check", the_deploy_script_runs_the_check)
+check("it does not settle for a 200 any more",
+      the_deploy_script_does_not_settle_for_a_200)
+check("it fails the deploy on a non-zero verdict",
+      the_deploy_script_fails_on_a_nonzero_verdict)
+check("it branches on every verdict, not just zero",
+      the_deploy_script_distinguishes_every_verdict)
 
 print("\n== §5  a genuine second source of truth ==")
 check("the checker imports no orgtree", the_checker_imports_no_orgtree)

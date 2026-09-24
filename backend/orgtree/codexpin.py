@@ -3,8 +3,7 @@
 whether to install it. The Codex half of what `clipin` is for Claude.
 
 WHY THIS EXISTS AT ALL (2026-09-04). Nothing in this repo ever refreshed the
-Codex pin: `update.ps1`, `update.sh` and `tools/install-autostart.ps1` had no
-codex step, so `<data-root>/codex` sat at whatever version a human last
+Codex pin: `update.sh` had no codex step, so `<data-root>/codex` sat at whatever version a human last
 installed by hand — 28 August, on this machine. On 4 September that cost
 hours. OpenAI's ``model/list`` gates rollout models on the REPORTING CLIENT
 VERSION, so the stale pin returned 9 model ids while a newer CLI returned the
@@ -101,10 +100,9 @@ def parses(v: str | None) -> bool:
 def decide(installed: str | None, floor: str = PIN) -> dict[str, str]:
     """Should a deploy install the Codex pin, and why?
 
-    THE DECISION LIVES HERE, not in the shell, because there are two update
-    scripts of ~800 lines each and a rule implemented twice is a rule that
-    disagrees with itself on one platform. `update.ps1` and `update.sh` call
-    this and execute the answer; this is what the tests exercise.
+    THE DECISION LIVES HERE, not in the shell, so the rule is reachable by
+    the tests instead of only by running a deploy. `update.sh` calls this and
+    executes the answer.
 
     `installed` is the version currently in the pin directory, or ``None``
     when the pin is absent or its package.json could not be read.

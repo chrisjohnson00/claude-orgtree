@@ -639,8 +639,9 @@ _origin_cache: dict[str, Any] = {"at": 0.0, "val": ""}
 
 def _public_origin() -> str:
     """ORGTREE_PUBLIC_ORIGIN wins; otherwise the live tunnel hostname that
-    expose.ps1 drops into <data>/.public_origin (TryCloudflare quick-tunnel
-    URLs change per run, so this is re-read on a short TTL)."""
+    the operator writes to <data>/.public_origin after opening a tunnel (see
+    the README; TryCloudflare quick-tunnel URLs change per run, so this is
+    re-read on a short TTL)."""
     if PUBLIC_ORIGIN:
         return PUBLIC_ORIGIN
     if time.time() - _origin_cache["at"] > 5:
