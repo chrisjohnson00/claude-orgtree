@@ -497,7 +497,9 @@ def suppression_never_touches_mail_notices_or_authority() -> None:
             "# ", "").split('"""')[-1], forbidden
     decide_src = inspect.getsource(envelope.decide)
     assert "mail" not in decide_src and "notice" not in decide_src
-    run = inspect.getsource(S._run_one_turn)
+    # _run_one_turn is now a thin wrapper; the pinned body lives in
+    # _run_one_turn_recorded.
+    run = inspect.getsource(S._run_one_turn_recorded)
     i_mail = run.index("mtext, turn_images = _mail_block")
     i_state = run.index("state_block = _envelope_state_block")
     assert i_mail < i_state, (
@@ -517,7 +519,9 @@ def the_turn_path_still_builds_both_blocks_and_commits_them() -> None:
     """Placement pins, in the spirit of the ones D-181 and the usage envelope
     already carry: a saving that quietly stopped delivering would look exactly
     like a saving that worked."""
-    run = inspect.getsource(S._run_one_turn)
+    # _run_one_turn is now a thin wrapper; the pinned body lives in
+    # _run_one_turn_recorded.
+    run = inspect.getsource(S._run_one_turn_recorded)
     assert run.count("turn_usage_block(") == 2, (
         "ordinary and boundary-fed turns each need their own board")
     assert "_envelope_state_block(" in run
@@ -538,7 +542,9 @@ def every_provider_takes_the_same_door() -> None:
     """Codex and Antigravity turns rejoin through the same prologue, so suppression
     must be provider-neutral: it is decided before the seam and reads nothing
     provider-specific."""
-    run = inspect.getsource(S._run_one_turn)
+    # _run_one_turn is now a thin wrapper; the pinned body lives in
+    # _run_one_turn_recorded.
+    run = inspect.getsource(S._run_one_turn_recorded)
     i_state = run.index("state_block = _envelope_state_block")
     for seam in ("_codex_leg(", "_antigravity_leg("):
         assert i_state < run.index(seam), seam

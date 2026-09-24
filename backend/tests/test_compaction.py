@@ -2336,7 +2336,9 @@ def account_switch_compaction() -> None:
     check("switch · an unobserved account remains uncertain and never compacts",
           lambda: _eq(ready(_sw_node(occ=60_000), cfg,
                             {"state": "uncertain"}), False))
-    _src = re.sub(r"\s+", "", inspect.getsource(supervisor._run_one_turn))
+    # _run_one_turn is now a thin wrapper; the pinned body lives in
+    # _run_one_turn_recorded.
+    _src = re.sub(r"\s+", "", inspect.getsource(supervisor._run_one_turn_recorded))
     check("switch · forecast and Claude launch reuse one resolved spawn env",
           lambda: _true("cache_pre_env=spawn_env(" in _src
                         and "env=cache_pre_envorspawn_env(" in _src))
