@@ -167,7 +167,7 @@ def workspace_usage_cached(org: Org, max_age: float = 15.0) -> int | None:
     total = hit[1]
     return total
 
-COMPACT_AT = float(os.environ.get("ORGTREE_COMPACT_AT", "0.80"))   # §8.2
+COMPACT_AT = float(os.environ.get("ORGTREE_COMPACT_AT", "0.50"))   # §8.2
 ORACLE_AT = float(os.environ.get("ORGTREE_ORACLE_AT", "0.92"))     # §8.3 state 2→3
 
 # A reported-working agent is declaring a bounded pause between turns rather
@@ -19089,11 +19089,11 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                                           _node_ref(o2, nid), bearer=nid))
                 store.save_org(o2)
         return
-    # per-org compaction threshold (user setting, 50–95%); the env default is
+    # per-org compaction threshold (user setting, 20–95%); the env default is
     # the fallback, everything hard-capped at 95%.
     #
     # ⚠ The FLOOR matters as much as the ceiling, and only the ceiling was
-    # here. `POST /settings` clamps to 50–95 (api.py:1012) but nothing else
+    # here. `POST /settings` clamps to 20–95 (api.py:1012) but nothing else
     # does: `defaults.json` is stored ORG-DOC-SHAPED and unvalidated
     # (api.py:894,921) and the doc itself is hand-editable, so a
     # zero-or-negative `compact_at` reached this line intact and made

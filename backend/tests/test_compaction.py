@@ -736,8 +736,8 @@ def thresholds() -> None:
     supervisor._compact_split = spy                        # type: ignore[assignment]
     try:
         cw = supervisor.TIER_CONTEXT["haiku"]
-        for frac, want in ((0.10, False), (0.79, False), (0.80, True),
-                           (0.81, True), (0.999, True)):
+        for frac, want in ((0.10, False), (0.49, False), (0.50, True),
+                           (0.51, True), (0.999, True)):
             org, (a,) = horg()
             store.save_org(org)
             calls.clear()
@@ -749,12 +749,26 @@ def thresholds() -> None:
 
         # the per-org override, in org-doc FRACTION units
         org, (a,) = horg()
-        org.d["compact_at"] = 0.50
+        org.d["compact_at"] = 0.30
         store.save_org(org)
         calls.clear()
         supervisor._state.pop((org.d["slug"], a), None)
-        run_after(org, a, int(cw * 0.55))
+        run_after(org, a, int(cw * 0.35))
         check("threshold · the per-org compact_at overrides the env default",
+              lambda: _true(bool(calls)))
+
+        # the documented minimum (20%)
+        org, (a,) = horg()
+        org.d["compact_at"] = 0.20
+        store.save_org(org)
+        calls.clear()
+        supervisor._state.pop((org.d["slug"], a), None)
+        run_after(org, a, int(cw * 0.15))
+        check("threshold · a 20% compact_at does not split below 20%",
+              lambda: _eq(calls, []))
+        calls.clear()
+        run_after(org, a, int(cw * 0.25))
+        check("threshold · a 20% compact_at (the documented minimum) is honoured",
               lambda: _true(bool(calls)))
 
         # the hard cap
@@ -2336,6 +2350,7 @@ def predicates() -> None:
     for raw, want, why in [
         (0.80, 0.80, "the ordinary case"),
         (0.5, 0.5, "an aggressive per-org setting"),
+        (0.2, 0.2, "the documented minimum"),
         (0.95, 0.95, "the documented maximum"),
         (0.99, 0.95, "over the maximum is capped, not honoured"),
         (1.0, 0.95, "a full context is still capped"),

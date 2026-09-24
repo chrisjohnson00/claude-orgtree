@@ -1720,7 +1720,7 @@ export interface SettingsRequest {
   org_dirs?: DirGrant[] | null
   max_top_grant?: number | null
   default_top_grant?: number | null
-  compact_at?: number | null   // percent, 50..95
+  compact_at?: number | null   // percent, 20..95
   clear_fable_lock?: boolean
   fable_limit_policy?: string | null
   fable_filter_policy?: string | null

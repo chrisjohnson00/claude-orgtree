@@ -91,7 +91,7 @@ Claude tiers.
 | `ORGTREE_TURN_TIMEOUT` | `14400` s | absolute per-message ceiling, re-based at each result event — a backstop, not the bound that normally fires (`supervisor.py`, reshaped 2026-08-04) |
 | `ORGTREE_TURN_IDLE` | `600` s | the idle watchdog: kill only after this long with ZERO CLI stdout events — distinguishes "wedged" from "working" (`supervisor.py`) |
 | `ORGTREE_COMPACT_TIMEOUT` | `600` s | the compaction fork's own bound (`supervisor.py`) — a big context can legitimately need longer |
-| `ORGTREE_COMPACT_AT` | `0.80` | context fraction that triggers compaction (`supervisor.py:144`) |
+| `ORGTREE_COMPACT_AT` | `0.50` | context fraction that triggers compaction (`supervisor.py:144`) |
 | `ORGTREE_ORACLE_AT` | `0.92` | context fraction for the §8.3 state 2→3 transition (`supervisor.py:145`) |
 | `ORGTREE_CONTEXT_WINDOWS` | `{}` | JSON override of per-model context sizes (`supervisor.py:153`) |
 | `ORGTREE_STEER_HOOK` | on | `0` disables the PostToolUse steer hook (`supervisor.py:930,959`) |
@@ -158,7 +158,7 @@ Shipped baseline (`api.py:770-774`):
 |---|---|
 | `max_top_grant` | `1000` |
 | `default_top_grant` | `50` |
-| `compact_at` | `0.80` |
+| `compact_at` | `0.50` |
 | `fable_limit_policy` | `halt` |
 | `fable_filter_policy` | `halt` |
 | `cascade_hire` | `true` |
@@ -178,7 +178,7 @@ Editable at any time; takes effect immediately unless noted. Model at `api.py:75
 | `org_dirs` | `[{path, mode}]` | folder holdings. The workspace is permanent. **Additions apply to future hires; removals revoke everywhere; rw→ro downgrades propagate to every existing grant.** |
 | `max_top_grant` | int | ceiling on any single top-level agent's credit grant |
 | `default_top_grant` | int | pre-filled grant when hiring at top level |
-| `compact_at` | int 50–95 (%) | per-org override of the compaction threshold |
+| `compact_at` | int 20–95 (%) | per-org override of the compaction threshold |
 | `fable_limit_policy` | `halt` \| `opus` \| `dissolve` | what happens when the weekly Fable limit is hit |
 | `fable_filter_policy` | `halt` \| `opus` | what happens when a content filter flags a message |
 | `clear_fable_lock` | bool (action) | clears an active Fable lock |

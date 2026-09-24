@@ -1943,7 +1943,7 @@ class Settings(Body):
     org_dirs: list[Any] | None = None       # external folders [{path, mode}] (ws excluded)
     max_top_grant: int | None = None
     default_top_grant: int | None = None    # pre-filled grant for top-level hires
-    compact_at: int | None = None           # compaction threshold in percent, 50..95
+    compact_at: int | None = None           # compaction threshold in percent, 20..95
     clear_fable_lock: bool = False
     fable_limit_policy: str | None = None   # halt | opus | dissolve
     fable_filter_policy: str | None = None  # halt | opus | auto-autopsy (content-filter flags)
@@ -1995,7 +1995,7 @@ class Settings(Body):
 # (user spec): configured from the root page; every NEWLY created org is
 # born with these values. Stored org-doc-shaped in <data>/defaults.json.
 _DEFAULTS_BASE = {
-    "max_top_grant": 1000, "default_top_grant": 50, "compact_at": 0.80,
+    "max_top_grant": 1000, "default_top_grant": 50, "compact_at": 0.50,
     "fable_limit_policy": "halt", "fable_filter_policy": "halt",
     "fable_filter_model": "opus",
     "prefer_reserve": True,
@@ -2041,7 +2041,7 @@ def defaults_set(body: Settings) -> dict[str, Any]:
     if body.default_top_grant is not None and body.default_top_grant >= 0:
         d["default_top_grant"] = int(body.default_top_grant)
     if body.compact_at is not None:
-        d["compact_at"] = min(95, max(50, int(body.compact_at))) / 100.0
+        d["compact_at"] = min(95, max(20, int(body.compact_at))) / 100.0
     if body.fable_limit_policy in ("halt", "opus", "dissolve"):
         d["fable_limit_policy"] = body.fable_limit_policy
     if body.fable_filter_policy in ("halt", "opus", "auto-autopsy"):
@@ -2163,8 +2163,8 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
     if body.default_top_grant is not None and body.default_top_grant >= 0:
         org.d["default_top_grant"] = int(body.default_top_grant)
     if body.compact_at is not None:
-        # 50–95%; the 95% ceiling is NOT configurable (user ruling)
-        org.d["compact_at"] = min(95, max(50, int(body.compact_at))) / 100.0
+        # 20–95%; the 95% ceiling is NOT configurable (user ruling)
+        org.d["compact_at"] = min(95, max(20, int(body.compact_at))) / 100.0
     if body.clear_fable_lock and org.d.get("fable_lock"):
         org.clear_fable_lock()
         warnings.append("fable lock cleared — fable agents may run and be rehired again")
