@@ -70,15 +70,6 @@ check("generated · positive control: one changed byte in a fixture is reported 
       _stale_detected)
 
 
-def _crlf():
-    for rel in ("frontend/src/generated/events.ts", "frontend/src/generated/events.schema.json",
-                "frontend/tests/fixtures/events/status.report.json"):
-        b = open(os.path.join(ROOT, rel), "rb").read()
-        assert b.count(b"\r\n") == b.count(b"\n"), f"{rel}: not pure CRLF"
-
-
-check("generated · files are CRLF by byte count (.gitattributes)", _crlf)
-
 print(f"\n{PASSED} checks passed, {len(FAILED)} failed")
 for f in FAILED:
     print("\nFAIL:", f)

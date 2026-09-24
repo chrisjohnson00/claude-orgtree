@@ -188,9 +188,10 @@ def main():
           lambda: eq("not installed" in (codex["reason"] or ""), True,
                      f"reason {codex['reason']!r}"))
 
-    stub = os.path.join(tmp, "codex.cmd")
+    stub = os.path.join(tmp, "codex")
     with open(stub, "w", encoding="ascii") as f:
-        f.write("@echo codex-cli 9.9.9\n")
+        f.write("#!/bin/sh\necho codex-cli 9.9.9\n")
+    os.chmod(stub, 0o755)
     os.environ["ORGTREE_CODEX"] = stub
     st = providers.codex_status(force=True)
     check("a real (stub) CLI probes to its --version — no package.json "

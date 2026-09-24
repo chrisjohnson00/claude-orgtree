@@ -434,12 +434,11 @@ def _codex_pin() -> str | None:
     name and vendor triple vary per OS, so glob rather than hardcode; the
     `.bin` shim is the fallback for a layout the glob doesn't anticipate."""
     root = os.path.join(_DATA, "codex", "node_modules")
-    exe = "codex.exe" if os.name == "nt" else "codex"
     hits = glob.glob(os.path.join(
-        root, "@openai", "codex-*", "vendor", "*", "bin", exe))
+        root, "@openai", "codex-*", "vendor", "*", "bin", "codex"))
     if hits:
         return hits[0]
-    shim = os.path.join(root, ".bin", "codex.cmd" if os.name == "nt" else "codex")
+    shim = os.path.join(root, ".bin", "codex")
     return shim if os.path.exists(shim) else None
 
 
@@ -475,12 +474,8 @@ def _codex_version(exe: str) -> str:
             pass
         probe = os.path.dirname(probe)
     try:
-        argv = (["cmd", "/c", exe] if os.name == "nt"
-                and exe.lower().endswith((".cmd", ".bat")) else [exe])
-        r = subprocess.run(argv + ["--version"], capture_output=True,
-                           text=True, timeout=15,
-                           creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                                          if os.name == "nt" else 0))
+        r = subprocess.run([exe, "--version"], capture_output=True,
+                           text=True, timeout=15, creationflags=0)
         m = re.search(r"\d+\.\d+\.\d+", r.stdout or "")
         if m:
             return m.group(0)

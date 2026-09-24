@@ -20505,6 +20505,24 @@ def _remote_save_hook(slug: str) -> None:
         remote_reap(slug)
 
 
+def _terminate_and_reap(proc: subprocess.Popen) -> None:
+    """`terminate()` alone leaves a zombie until someone `wait()`s it, and
+    `os.kill(pid, 0)` still succeeds on a zombie — so a caller that only
+    checks pid liveness never notices the server is actually gone. Wait for
+    the exit, and escalate to `kill()` for a server that ignores SIGTERM."""
+    try:
+        proc.terminate()
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    except OSError:
+        pass
+
+
 def remote_reap(slug: str) -> None:
     """Kill remote-control servers whose seat no longer exists (redteam
     2026-08-05: delete/archive/rename removed the node but `_remote_procs`
@@ -20525,19 +20543,13 @@ def remote_reap(slug: str) -> None:
         if k[1] not in alive:
             proc = _remote_procs.pop(k, None)
             if proc is not None:
-                try:
-                    proc.terminate()
-                except OSError:
-                    pass
+                _terminate_and_reap(proc)
 
 
 def remote_control_stop(slug: str, nid: str) -> dict[str, Any]:
     proc = _remote_procs.pop((slug, nid), None)
     if proc is not None:
-        try:
-            proc.terminate()
-        except OSError:
-            pass
+        _terminate_and_reap(proc)
     had_mail = False
     sid_driven = None
     with store.DOC_LOCK:
