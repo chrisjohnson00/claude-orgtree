@@ -206,11 +206,8 @@ def main():
                      (sys.executable, ["C:/x/agy.exe"]), "argv"))
     check("the install hint names the installer THIS platform runs, never "
           "an npm command",
-          lambda: eq(("winget install Google.AntigravityCLI"
-                      in providers.install_hint("google")) if os.name == "nt"
-                     else ("antigravity.google/cli/install.sh"
-                           in providers.install_hint("google")),
-                     True, "hint"))
+          lambda: eq("antigravity.google/cli/install.sh"
+                     in providers.install_hint("google"), True, "hint"))
     parent_env = {"ANTHROPIC_API_KEY": "a", "OPENAI_API_KEY": "o",
                   "CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "x",
                   "GOOGLE_CLOUD_PROJECT": "keep",

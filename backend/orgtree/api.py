@@ -7233,7 +7233,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     shell = str(a.get("shell") or "native").strip().lower()
                     if shell == "bash" and kind in ("command", "stream"):
                         # ☠ REFUSE, NEVER FALL BACK (2026-08-22). Handing a
-                        # bash-idiom target to cmd.exe because bash was
+                        # bash-idiom target to sh because bash was
                         # missing is the defect this field exists to fix,
                         # rebuilt one level up and made worse: the agent
                         # asked for bash and was told yes, so it has no
@@ -7248,17 +7248,13 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                         if supervisor.wd_bash_exe() is None:
                             raise LedgerError(
                                 "shell='bash' was asked for but no bash can "
-                                "be found on this machine (looked on PATH, "
-                                "in the Git for Windows install locations, "
-                                "and in the registry; a WSL "
-                                "System32\\bash.exe is deliberately NOT "
-                                "used — it would run your command in a "
-                                "different filesystem entirely). REFUSING "
-                                "rather than quietly running your target in "
-                                "cmd.exe, where a bash idiom matches nothing "
-                                "and the dog looks healthy forever. Install "
-                                "Git for Windows, or write a cmd target "
-                                "(findstr, dir /b, %VAR%) and omit `shell`.")
+                                "be found on this machine (looked in /bin, "
+                                "/usr/bin, /usr/local/bin and on PATH). "
+                                "REFUSING rather than quietly running your "
+                                "target in sh, where a bash idiom can match "
+                                "nothing and the dog looks healthy forever. "
+                                "Install bash, or write a POSIX sh target "
+                                "and omit `shell`.")
                     result = org.watchdog_create(
                         body.node, a.get("name"), kind, tgt,
                         a.get("pattern"), a.get("interval_s") or 60,
@@ -7733,8 +7729,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     if smoke_req is not None:
         # FAIL LOUDLY AT CREATE TIME (2026-08-22). Arming a dog used to tell
         # the agent nothing about whether its target actually works, so a
-        # command that never even STARTED — cmd.exe answering "'grep' is not
-        # recognized", every 60s, for nine days — was indistinguishable from
+        # command that never even STARTED — the shell answering "command not
+        # found", every 60s, for nine days — was indistinguishable from
         # a condition that had not happened yet. Three dogs on this machine
         # died that way. Running the target once, here, through the SAME
         # `_wd_popen` the engine uses, would have made every one of them
@@ -8542,10 +8538,7 @@ def _legacy_targets(slug: str) -> tuple[list[str], list[str]]:
             for d in ("usr", "var", "etc", "opt", "root", "srv")
             if subprocess.run(["docker", "volume", "inspect",
                                sandbox.sys_volume(slug, d)],
-                              capture_output=True,
-                              creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                                             if os.name == "nt" else 0)
-                              ).returncode == 0]
+                              capture_output=True).returncode == 0]
     dirs = [p for p in (sandbox.sandbox_root(slug),
                         store.workspace_dir(slug), store.scratch_root(slug))
             if os.path.isdir(p)]
@@ -8588,9 +8581,7 @@ def sweep_legacy(slug: str, request: Request) -> dict[str, Any]:
     failures: list[str] = []
     if vols:
         r = subprocess.run(["docker", "volume", "rm", "-f", *vols],
-                           capture_output=True, text=True, timeout=120,
-                           creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                                          if os.name == "nt" else 0))
+                           capture_output=True, text=True, timeout=120)
         if r.returncode != 0:
             failures.append((r.stderr or r.stdout)[-200:])
     for p in dirs:

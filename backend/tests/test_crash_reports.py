@@ -55,8 +55,7 @@ def _esbuild_cli():
     shared checkout, since this suite was written (2026-08-30).
     """
     return os.path.join(
-        crashreports.FRONTEND_ROOT, "node_modules", ".bin",
-        "esbuild.cmd" if os.name == "nt" else "esbuild")
+        crashreports.FRONTEND_ROOT, "node_modules", ".bin", "esbuild")
 
 
 def check(label, fn):

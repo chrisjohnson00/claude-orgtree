@@ -32,8 +32,7 @@ assert Path(gw.__file__).resolve().is_relative_to(ROOT), "INERT: wrong code impo
 
 def git(path: Path, *args: str) -> str:
     result = subprocess.run(["git", *args], cwd=path, env=os.environ.copy(),
-                            capture_output=True, text=True, timeout=30,
-                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                            capture_output=True, text=True, timeout=30)
     if result.returncode:
         raise AssertionError(f"fixture git {args[0]} failed: {result.stderr}")
     return result.stdout.strip()
@@ -72,8 +71,7 @@ class Fixture:
             parent = initial if i == 1 else f":{i - 1}"
             stream.append(f"commit refs/heads/{branch}\nmark :{i}\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 7\nhistory\nfrom {parent}\n\n")
         proc = subprocess.run(["git", "fast-import", "--quiet"], cwd=self.clone, input="".join(stream).encode(),
-                              capture_output=True, timeout=30, env=os.environ.copy(),
-                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                              capture_output=True, timeout=30, env=os.environ.copy())
         if proc.returncode:
             raise AssertionError(proc.stderr)
         return initial

@@ -73,7 +73,6 @@ print(f"testing orgtree at: {_GOT}")
 
 PASS = 0
 FAIL: list[str] = []
-WIN = os.name == "nt"
 
 
 def check(label, fn):
@@ -605,8 +604,7 @@ def _real_ticks_persistent_repeats_one_shot_does_not():
     marker = os.path.join(d, "state.txt")
     with open(marker, "w", encoding="utf-8") as fh:
         fh.write("READY=yes WHY=24h deadline reached\n")
-    tgt = (f'findstr /C:"READY=yes" "{marker}"' if WIN
-           else f'grep -F "READY=yes" "{marker}"')
+    tgt = f'grep -F "READY=yes" "{marker}"'
     real_pool = supervisor._wd_cmd_pool
     try:
         keeps = o.watchdog_create("k", "keeps", "command", tgt,
@@ -690,8 +688,7 @@ def _a_spent_one_shot_stream_leaves_no_child_running():
     o = fixture("zz 1shot stream")
     slug = o.d["slug"]
     # print a matching line, then stay alive doing nothing for a long time
-    tgt = ('cmd /c "echo HIT& ping -n 120 127.0.0.1 >nul"' if WIN
-           else 'sh -c "echo HIT; sleep 120"')
+    tgt = 'sh -c "echo HIT; sleep 120"'
     proc = None
     try:
         s = o.watchdog_create("k", "listener", "stream", tgt, "HIT", 5,

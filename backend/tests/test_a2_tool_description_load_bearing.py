@@ -8,9 +8,7 @@ orgtree_prime_restart (3,112), orgtree_self_restart (2,840) — see redteam's
 2026-09-10 report on this item. orgtree_work already has real coverage
 (test_work_items.py's DOCKET_DOCTRINE pins + this session's
 test_docket_doctrine_load_bearing_gaps.py) and is NOT repeated here.
-orgtree_watchdog has partial coverage (test_watchdog_visibility.py §6 pins
-cmd.exe/findstr/smoke/checks_run/"NOT IN YOUR SHELL" with a negative-control
-pair). orgtree_hire has one existing pin (desc mentions "superior" as the
+orgtree_watchdog has partial coverage in test_watchdog_visibility.py. orgtree_hire has one existing pin (desc mentions "superior" as the
 second mode, test_hire_schema_contract.py). orgtree_prime_restart and
 orgtree_self_restart have ZERO description-content coverage anywhere in the
 suite — verified by grep before writing this file (only schema-field/enum

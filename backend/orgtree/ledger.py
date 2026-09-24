@@ -6636,8 +6636,8 @@ class Org:
 
         `shell` (2026-08-22) opts a command/stream dog out of the platform's
         native shell. ABSENT — and every dog armed before this existed is
-        absent — means native, i.e. `shell=True`: cmd.exe on a Windows host,
-        exactly as before. "bash" runs `bash -lc` instead, for agents who
+        absent — means native, i.e. `shell=True`: /bin/sh, exactly as
+        before. "bash" runs `bash -lc` instead, for agents who
         want the POSIX idiom the old tool card wrongly implied they had.
 
         ⚠ The API boundary REFUSES "bash" when no bash can be found, rather

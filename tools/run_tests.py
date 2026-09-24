@@ -243,11 +243,9 @@ def _store_backend_defaults_to_sqlite():
 
 def _interpreter():
     """The venv's python if there is one, else the one running this file."""
-    for rel in (os.path.join(".venv", "Scripts", "python.exe"),
-                os.path.join(".venv", "bin", "python")):
-        p = os.path.join(REPO, rel)
-        if os.path.exists(p):
-            return p
+    p = os.path.join(REPO, ".venv", "bin", "python")
+    if os.path.exists(p):
+        return p
     return sys.executable
 
 
@@ -358,11 +356,7 @@ def child_env():
 
 def _kill_tree(proc):
     try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                           capture_output=True)
-        else:
-            os.killpg(os.getpgid(proc.pid), 9)
+        os.killpg(os.getpgid(proc.pid), 9)
     except Exception:                                            # noqa: BLE001
         pass
     try:
@@ -424,10 +418,9 @@ def run_one(suite, cmd, timeout, logdir):
     r = Result()
     r.suite, r.checks, r.guard_lines = suite, None, []
     t0 = time.time()
-    kw = {} if os.name == "nt" else {"start_new_session": True}
     proc = subprocess.Popen(cmd, cwd=suite.cwd, env=child_env(),
                             stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, **kw)
+                            stderr=subprocess.STDOUT, start_new_session=True)
     try:
         out = proc.communicate(timeout=timeout)[0]
         r.rc = proc.returncode

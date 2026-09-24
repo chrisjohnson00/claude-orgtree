@@ -22,8 +22,8 @@ The wire is print mode's `--output-format stream-json` — NDJSON on stdout:
 and the PROMPT rides STDIN as `--input-format stream-json` — one line,
 `{"event":"user","message":{"role":"user","content":<text>}}` — then EOF,
 which is what ends the run after that one turn ("stream input closed after
-1 turn(s)"). Stdin, not argv: Windows caps a command line at 32K characters
-and a mail batch can be longer; the stdin lane carried 120K characters of
+1 turn(s)"). Stdin, not argv: Linux caps one argv string at 128 KiB and a
+mail batch can be longer; the stdin lane carried 120K characters of
 prose intact (measured). ⚠ A single 40,000-character TOKEN (no whitespace)
 made the CLI return an empty SUCCESS with zero usage — real text does not do
 that, and nothing orgtree sends is a 40K-character word.
@@ -61,9 +61,8 @@ node whose ⚙ scope narrows `bash`/`edit` is held to it by a PreToolUse HOOK
 (`<cwd>/.agents/hooks.json`, measured: {"decision":"deny"} blocks the call
 and the run CONTINUES with the reason shown to the model; a hook that fails
 to run blocks the call too — fail closed). The hook command is a wrapper
-script with NO quotes in its own path where possible: `cmd /c` mangles a
-quoted-executable-plus-argument command line (measured), which is the whole
-reason the wrapper exists.
+script with no arguments, so the hook command is a single path token that
+the CLI's `sh -c` runs without any quoting games.
 
 ⚠ THE CWD IS NOT THE WORKSPACE unless `--add-dir <cwd>` says so: without it
 the agent's tools ran in the CLI's own app-data scratch (measured),
@@ -154,8 +153,7 @@ _AGENTS_DIR: Final = ".agents"
 _PLUGIN_DIR: Final = os.path.join(_AGENTS_DIR, "plugins", "orgtree")
 _HOOKS_FILE: Final = os.path.join(_AGENTS_DIR, "hooks.json")
 _RIGHTS_PY: Final = os.path.join(_AGENTS_DIR, "orgtree-rights.py")
-_RIGHTS_WRAPPER: Final = os.path.join(
-    _AGENTS_DIR, "orgtree-rights.cmd" if os.name == "nt" else "orgtree-rights.sh")
+_RIGHTS_WRAPPER: Final = os.path.join(_AGENTS_DIR, "orgtree-rights.sh")
 
 
 class AntigravityError(RuntimeError):
@@ -245,11 +243,8 @@ else:
 
 def _hook_command(path: str) -> str:
     """The hooks.json `command` for a wrapper at `path`. The CLI runs it via
-    `cmd /c` (Windows) or `sh -c`; a bare absolute path is the one shape
-    both take without quoting games, and a path WITH a space is quoted as a
-    single token, which both shells honour (it is the quoted-executable-
-    PLUS-arguments shape that cmd mangles — measured — and the wrapper
-    exists so this command never has arguments)."""
+    `sh -c`; a bare absolute path needs no quoting, and a path WITH a space
+    is quoted as a single token."""
     return f'"{path}"' if " " in path else path
 
 
@@ -328,15 +323,10 @@ def write_workspace(cwd: str, *, identity: str, mcp_servers: dict[str, Any],
     py = python or sys.executable
     with open(rights_py, "w", encoding="utf-8") as f:
         f.write(_RIGHTS_TEMPLATE % {"deny": json.dumps(deny, indent=4)})
-    if os.name == "nt":
-        body = f'@echo off\r\n"{py}" "%~dp0orgtree-rights.py"\r\n'
-        with open(wrapper, "w", encoding="utf-8", newline="") as f:
-            f.write(body)
-    else:
-        body = f'#!/bin/sh\nexec "{py}" "$(dirname "$0")/orgtree-rights.py"\n'
-        with open(wrapper, "w", encoding="utf-8", newline="\n") as f:
-            f.write(body)
-        os.chmod(wrapper, 0o755)
+    body = f'#!/bin/sh\nexec "{py}" "$(dirname "$0")/orgtree-rights.py"\n'
+    with open(wrapper, "w", encoding="utf-8", newline="\n") as f:
+        f.write(body)
+    os.chmod(wrapper, 0o755)
     with open(hooks_path, "w", encoding="utf-8") as f:
         json.dump({"orgtree-rights": {"PreToolUse": [{
             "matcher": "*",
@@ -349,16 +339,11 @@ def write_workspace(cwd: str, *, identity: str, mcp_servers: dict[str, Any],
 # ── process control ──────────────────────────────────────────────────────
 
 def kill_tree(proc: subprocess.Popen[bytes] | None) -> None:
-    """Kill the CLI AND its children by pid through the OS (the CLI forks a
-    language-server child; a bare `kill()` of the parent would orphan it),
-    then wait so the next spawn never contends with a dying tree."""
+    """Kill the CLI, then wait so the next spawn never contends with a
+    dying process."""
     if proc is None or proc.poll() is not None:
         return
     try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                           capture_output=True, timeout=15,
-                           creationflags=subprocess.CREATE_NO_WINDOW)  # type: ignore[attr-defined]
         proc.kill()
     except (OSError, subprocess.TimeoutExpired):
         pass
@@ -509,9 +494,7 @@ class AntigravityTurn:
         self._provenance_boundary = antigravity_provenance.capture(self.conversation_id, env)
         self.proc = subprocess.Popen(
             self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, env=env, cwd=self.cwd,
-            creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                           if os.name == "nt" else 0))
+            stderr=subprocess.PIPE, env=env, cwd=self.cwd)
         self._reader = threading.Thread(target=self._pump, daemon=True)
         self._reader.start()
         threading.Thread(target=self._pump_err, daemon=True).start()
@@ -691,6 +674,6 @@ class AntigravityTurn:
 
 
 def which_python() -> str:
-    """The interpreter the rights hook runs under — this one, unless it is
-    somewhere `cmd` cannot spell (a wrapper handles the quoting anyway)."""
+    """The interpreter the rights hook runs under — this one, falling back to
+    `python` on PATH."""
     return sys.executable or shutil.which("python") or "python"

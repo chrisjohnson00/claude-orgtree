@@ -100,10 +100,9 @@ def _ephemeral_port() -> int:
     of an unrelated commit.
 
     ⚠ ORPHANS ARE NOT WHY THE FIXED NUMBER WAS HERE, so nothing is lost by
-    dropping it: `_leash` (D-170) already ties the rig backend's lifetime to
-    this process with a KILL_ON_JOB_CLOSE job object, which is what actually
-    stopped killed runs leaving listeners behind. The fixed port's remaining
-    effect was to make concurrent runs of this suite collide.
+    dropping it: the test runner starts each suite in its own session and
+    kills the whole process group on timeout, rig backend included. The fixed
+    port's remaining effect was to make concurrent runs of this suite collide.
 
     Binding port 0 and closing leaves a window before the rig binds it, so the
     precondition below still VERIFIES the port rather than trusting this — see
@@ -2013,16 +2012,6 @@ def hermetic() -> None:
           "and says the agents stall afterwards",
           _the_card_offers_force_without_defaulting_to_it)
 
-    def _spawn_flags() -> int:
-        """The creationflags _detached_spawn would pass on Windows, read from
-        the source: the value never reaches a return, and a probe alone would
-        not catch DETACHED_PROCESS coming back on a POSIX dev box."""
-        src = open(supervisor.__file__, encoding="utf-8").read()
-        m = re.search(r'kwargs\["creationflags"\]\s*=\s*([0-9xA-Fa-f]+)\s*\|'
-                      r'\s*([0-9xA-Fa-f]+)', src)
-        assert m, "creationflags are no longer set the way this check reads them"
-        return int(m.group(1), 16) | int(m.group(2), 16)
-
     def _spawn_args_for(target: str = "org"):
         """Run launch_self_restart with the spawn stubbed, and hand back what it
         would have spawned. others_working is stubbed too: by now this suite has
@@ -2047,8 +2036,8 @@ def hermetic() -> None:
     def _launch_never_asks_for_only_if_behind():
         """☠ D-142 (user ruling 2026-08-21), and the whole point of the rename.
 
-        This assertion is the INVERSE of what it was until today. The launch
-        used to pass -OnlyIfBehind, and update.ps1 exits BEFORE the rebuild
+        The launch used to set ORGTREE_ONLY_IF_BEHIND, and the update script
+        exits BEFORE the rebuild
         when the pull advanced nothing — so a commit merged LOCALLY (main
         ahead of origin, never behind) made the tool log 'already up to date
         -- NOT restarting', exit 0, and leave the old build serving while
@@ -2056,59 +2045,20 @@ def hermetic() -> None:
         nobody was told. Pushing first does not rescue it either — then HEAD
         merely EQUALS origin, still not behind.
 
-        So: the launch must pass NEITHER the switch nor the env var, on either
-        platform. A revert of D-142 fails right here."""
+        So: the launch must not set the env var. A revert of D-142 fails right
+        here."""
         args, env = _spawn_args_for("org")
-        assert "-OnlyIfBehind" not in args, \
-            f"the launch passes -OnlyIfBehind again — it cannot deploy a " \
-            f"local commit and will fail silently (D-142): {args}"
-        assert (env or {}).get("ORGTREE_ONLY_IF_BEHIND") != "1", \
-            f"the launch sets ORGTREE_ONLY_IF_BEHIND again (D-142): {env}"
-        if os.name != "nt":
-            # ⚠ NOT merely "unset". update.sh reads the var from its INHERITED
-            # environment, so passing no env at all would let an ambient value
-            # on the box re-gate the deploy and quietly restore the bug —
-            # while an `is None` assertion sailed past, because None is
-            # exactly what "no env passed" looks like from here.
-            assert env is not None and env.get("ORGTREE_ONLY_IF_BEHIND") == "", \
-                f"the posix leg must CLEAR ORGTREE_ONLY_IF_BEHIND, not leave " \
-                f"it to the ambient environment (D-142): {env}"
+        # ⚠ NOT merely "unset". update.sh reads the var from its INHERITED
+        # environment, so passing no env at all would let an ambient value
+        # on the box re-gate the deploy and quietly restore the bug —
+        # while an `is None` assertion sailed past, because None is
+        # exactly what "no env passed" looks like from here.
+        assert env is not None and env.get("ORGTREE_ONLY_IF_BEHIND") == "", \
+            f"the launch must CLEAR ORGTREE_ONLY_IF_BEHIND, not leave it to " \
+            f"the ambient environment (D-142): {env}"
         # …and it is still the update script being spawned, not something that
         # merely lacks the flag because it stopped deploying altogether
-        assert any("update.ps1" in a or "update.sh" in a for a in args), args
-        # ⚠ THE OTHER PLATFORM'S LEG, read from the source. The runtime check
-        # above only ever exercises ONE branch — whichever os.name this box
-        # is — so on Windows the posix leg (and vice versa) is invisible to
-        # it. Measured by mutation 2026-08-21: re-adding
-        # ORGTREE_ONLY_IF_BEHIND to the bash leg passed every runtime
-        # assertion on this machine. Scan the whole function body instead, so
-        # neither leg can be regressed silently on the platform that does not
-        # run it here.
-        src = open(supervisor.__file__, encoding="utf-8").read()
-        body = src[src.index("def launch_self_restart("):]
-        body = body[:body.index("\ndef ")]
-        code = "\n".join(ln for ln in body.splitlines()
-                         if not ln.lstrip().startswith("#"))
-        assert "-OnlyIfBehind" not in code, \
-            "launch_self_restart passes -OnlyIfBehind on some platform leg — " \
-            "that install cannot deploy a local commit (D-142)"
-        # The env var is a THREE-state thing, not two, which is why this is a
-        # pattern and not a substring test:
-        #   "1"      → gated. The bug.
-        #   absent   → ALSO effectively gated on Linux: update.sh reads the var
-        #              from its inherited environment, so an ambient value on
-        #              the box (a systemd unit, a profile export) re-gates the
-        #              deploy with nothing in this repo to show for it.
-        #   ""       → the only correct state: explicitly cleared for the child.
-        assert not re.search(r'ORGTREE_ONLY_IF_BEHIND["\']\s*:\s*["\']1["\']',
-                             code), \
-            "launch_self_restart sets ORGTREE_ONLY_IF_BEHIND=1 on some " \
-            "platform leg — that install cannot deploy a local commit (D-142)"
-        assert re.search(r'ORGTREE_ONLY_IF_BEHIND["\']\s*:\s*["\']["\']', code), \
-            "the posix leg no longer CLEARS ORGTREE_ONLY_IF_BEHIND for the " \
-            "child. Passing no env is not the same as clearing it: update.sh " \
-            "would inherit an ambient value and silently re-gate the deploy " \
-            "on Linux, which is where it is hardest to notice (D-142)"
+        assert any("update.sh" in a for a in args), args
     check("☠ selfrestart · the launch does NOT gate on 'behind' — it deploys "
           "the current commit (D-142)", _launch_never_asks_for_only_if_behind)
 
@@ -2193,7 +2143,7 @@ def hermetic() -> None:
                 "the org leg did not reach the interlock at all — either " \
                 "it stopped deploying, or something else swallowed the " \
                 "spawn and this check is no longer proving anything"
-            assert any("update.ps1" in a or "update.sh" in a
+            assert any("update.sh" in a
                        for a in _DEPLOY_ATTEMPTS[-1]), _DEPLOY_ATTEMPTS[-1]
 
             # (b) the MAILHUB leg — never covered by the mid-turn refusal at
@@ -2224,8 +2174,6 @@ def hermetic() -> None:
         """☠ A self-update that logs nothing but the Python-written banner
         leaves the operator blind, and no local deploy exercises this path. So
         the behaviour is measured for real rather than asserted."""
-        assert not (0x00000008 & _spawn_flags()), \
-            "DETACHED_PROCESS is back — the child's output will vanish again"
         probe = os.path.join(TMP, "spawnprobe.sh")
         with open(probe, "w", encoding="utf-8") as f:
             f.write('echo H\necho O >&2\nsh -c "echo N"\n')
@@ -2436,78 +2384,6 @@ BASE = f"http://127.0.0.1:{PORT}"
 PROC: subprocess.Popen[str] | None = None
 _orgs: list[str] = []
 
-
-# ------------------------------------------------------- the rig's own leash
-# ⚠ A KILLED SUITE USED TO LEAVE A BACKEND HOLDING THIS PORT FOREVER, and that
-# orphan then failed EVERY later run of this suite with ~23 "section aborted"
-# entries until somebody killed it by hand. Measured 2026-08-28: start the
-# suite, wait for :7401 to LISTEN, kill only the suite process — the rig went
-# on listening. `main()`'s `finally: stop_backend()` covers an EXIT; it cannot
-# cover a KILL, and a kill is the normal case here, because an agent that runs
-# the tier as a background task has it killed the moment its turn ends.
-#
-# So the rig's lifetime is tied to this process by the OS, exactly as
-# `supervisor.py::_leash` ties CLI children to the backend: a job object with
-# KILL_ON_JOB_CLOSE reaps every process in it the instant the last handle goes
-# away, however this process dies. One lifetime mechanism in this tree, not
-# two. See D-170.
-_JOB: int | None = None
-
-
-def _job_handle() -> int | None:
-    global _JOB
-    if os.name != "nt":
-        return None
-    if _JOB is not None:
-        return _JOB
-    import ctypes
-    k32 = ctypes.windll.kernel32
-
-    class _BASIC(ctypes.Structure):
-        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
-                    ("PerJobUserTimeLimit", ctypes.c_int64),
-                    ("LimitFlags", ctypes.c_uint32),
-                    ("MinimumWorkingSetSize", ctypes.c_size_t),
-                    ("MaximumWorkingSetSize", ctypes.c_size_t),
-                    ("ActiveProcessLimit", ctypes.c_uint32),
-                    ("Affinity", ctypes.c_size_t),
-                    ("PriorityClass", ctypes.c_uint32),
-                    ("SchedulingClass", ctypes.c_uint32)]
-
-    class _IO(ctypes.Structure):
-        _fields_ = [(f, ctypes.c_uint64) for f in (
-            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
-
-    class _EXT(ctypes.Structure):
-        _fields_ = [("BasicLimitInformation", _BASIC), ("IoInfo", _IO),
-                    ("ProcessMemoryLimit", ctypes.c_size_t),
-                    ("JobMemoryLimit", ctypes.c_size_t),
-                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
-
-    h = k32.CreateJobObjectW(None, None)
-    if h:
-        info = _EXT()
-        info.BasicLimitInformation.LimitFlags = 0x2000   # KILL_ON_JOB_CLOSE
-        k32.SetInformationJobObject(h, 9, ctypes.byref(info), ctypes.sizeof(info))
-    _JOB = h or None
-    return _JOB
-
-
-def _leash(proc: "subprocess.Popen[str]") -> None:
-    """Tie the rig backend's lifetime to this suite's, so a kill cannot orphan
-    a listener on PORT. Best effort: on POSIX the child is already in our
-    process group, and `stop_backend` remains the ordinary path on both."""
-    try:
-        if os.name == "nt":
-            h = _job_handle()
-            if h:
-                import ctypes
-                ctypes.windll.kernel32.AssignProcessToJobObject(
-                    h, int(proc._handle))   # pyright: ignore[reportAttributeAccessIssue]
-    except Exception:                                            # noqa: BLE001
-        pass
 
 WRAP_JS = r"""
 'use strict'
@@ -2735,22 +2611,6 @@ def port_holder(p: int) -> str:
     message. Never raises: a diagnosis that fails is still better than a bare
     'never freed', and must not replace it with a traceback of its own."""
     try:
-        if os.name == "nt":
-            out = subprocess.run(["netstat", "-ano"], capture_output=True,
-                                 text=True, timeout=20).stdout
-            pids = {ln.split()[-1] for ln in out.splitlines()
-                    if f":{p} " in ln and "LISTENING" in ln}
-            if not pids:
-                return "no LISTENING socket found — it may be closing"
-            who = []
-            for pid in sorted(pids):
-                t = subprocess.run(
-                    ["powershell", "-NoProfile", "-Command",
-                     f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}')"
-                     f".CommandLine"], capture_output=True, text=True,
-                    timeout=20).stdout.strip()
-                who.append(f"pid {pid}: {t[:120] or '(command line unavailable)'}")
-            return "; ".join(who)
         out = subprocess.run(["lsof", "-nP", f"-iTCP:{p}", "-sTCP:LISTEN"],
                              capture_output=True, text=True, timeout=20).stdout
         return out.strip().splitlines()[-1] if out.strip() else "unknown"
@@ -2791,8 +2651,8 @@ def port_free(p: int, tries: int = 100) -> None:
         f"the deployment uses the operator ports 7360-7362.\n"
         # ⚠ THE CAUSE LINE IS BRANCHED, and it used to name only one cause —
         # "an earlier run was KILLED, orphaning its backend". That stopped
-        # being the usual cause when `_leash` (D-170) tied the rig to this
-        # process, and on 2026-09-05 the REAL cause was a concurrent run of
+        # being the usual cause once the rig's lifetime was tied to this
+        # process (D-170), and on 2026-09-05 the REAL cause was a concurrent run of
         # this same suite on the same fixed port. A guard that names the wrong
         # cause sends the reader to the wrong place just as surely as no guard
         # at all — three readers took the last one for 23 broken behaviours.
@@ -2902,7 +2762,6 @@ def start_backend(max_turns: int = 16, steer_hook: str = "0",
                 + "from orgtree import api; api.main()"]
     PROC = subprocess.Popen(argv, cwd=os.path.join(_REPO, "backend"),
                             env=env, stdout=log, stderr=log, text=True)
-    _leash(PROC)          # a killed suite must not orphan it (D-170)
     for _ in range(300):
         if PROC.poll() is not None:
             raise RuntimeError(f"backend exited {PROC.returncode} at startup:\n"
