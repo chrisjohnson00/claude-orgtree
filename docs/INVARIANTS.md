@@ -951,22 +951,27 @@ confirms the landing work is committed and tested.
 ### INV-014 · every spawned CLI process dies with the backend
 
 - **Statement:** every CLI child process spawned by the backend MUST die
-  when the backend does — via a Windows job object (`KILL_ON_JOB_CLOSE`) or
-  an `atexit` sweep elsewhere. A turn timeout MUST additionally reap its
-  own in-container process explicitly, narrowed by that turn's session id.
-- **Scope:** every spawned provider CLI process, on every platform.
+  when the backend does. A turn timeout MUST additionally reap its own
+  in-container process explicitly, narrowed by that turn's session id.
+- **Scope:** every spawned provider CLI process.
 - **Prohibited states:** an orphaned CLI process outliving a backend
   shutdown or restart and continuing to append to a transcript the
   restarted backend is also resuming (two writers to one transcript).
 - **Allowed exceptions:** none stated.
-- **Observable enforcement:** the job-object leash on Windows; the
-  narrowed-by-session-id reap on turn timeout.
+- **Observable enforcement:** `supervisor._leash` adds every CLI child to
+  `_ORPHANS`, and an `atexit` sweep (`_reap_orphans`) kills them on a
+  graceful backend exit; the narrowed-by-session-id reap on turn timeout.
 - **Owning references:** `DECISIONS.md` D-041.
-- **Status:** enforced.
-- **Provenance:** ruling (invariant, discovered live) after `update.ps1`'s
-  force-kill of the backend was observed leaving orphaned CLIs writing to
-  transcripts the restarted backend was concurrently resuming.
-- **Amendments:** none.
+- **Status:** known_gap. A backend killed with SIGKILL (for example
+  `update.sh`'s `kill -9` fallback when a listener ignores SIGTERM) never runs
+  the `atexit` sweep, so its CLI children outlive it.
+- **Provenance:** ruling (invariant, discovered live) after a force-kill of
+  the backend by the update script was observed leaving orphaned CLIs writing
+  to transcripts the restarted backend was concurrently resuming.
+- **Amendments:** 2026-09-24 — the Windows job-object leash was removed with
+  Windows support; the mechanism named in the Statement was dropped, and the
+  status lowered from enforced to known_gap for the SIGKILL case the `atexit`
+  sweep cannot cover.
 
 ### INV-015 · context occupancy is read from the latest real assistant message, never accumulated
 
