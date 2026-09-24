@@ -643,13 +643,12 @@ spawned and left behind are not covered by this limit. `ORGTREE_TEST_RUN_TIMEOUT
 works through `tools/run_tests.py` as well as a direct `node tests/run.mjs` (its child environment strips
 `ORGTREE_*` but exempts `ORGTREE_TEST_*`). A value that is not a whole number is refused rather than read as `0`.
 
-**The two tiers.** The fast tier runs every suite in the cheapest mode that
-suite advertises — `--hermetic` if it has one, else `--quick`, else plain — and
-touches no real listener that matters. It is what CI runs. The full tier runs
-everything at full depth, including the live rigs that spawn a real uvicorn, a
-real turn loop and a fake Claude CLI, and sweep timing configurations in real
-elapsed time. Those are minutes each, so they are a pre-release gate rather
-than a per-change one.
+**The two tiers.** The fast tier runs every suite in the cheapest mode that suite advertises — `--hermetic` if it has
+one, else `--quick`, else plain — and touches no real listener that matters. It runs on every push. The full tier runs
+everything at full depth, including the live rigs that spawn a real uvicorn, a real turn loop and a fake Claude CLI,
+and sweep timing configurations in real elapsed time. Those are minutes each, so the full tier is a nightly and
+pre-release gate rather than a per-change one. Neither tier bills a model: every provider CLI is a fake. The one
+opt-in mode that needs a paid model, `test_message_visibility_live.py --real-cli`, is run by hand only.
 
 **How suites are found.** By glob — `backend/tests/test_*.py` plus `frontend/tests/run.mjs`. Adding a suite requires
 no edit to the runner: its flags, whether it starts a real listener (those run one at a time, after the parallel pool
@@ -670,8 +669,9 @@ of that model has quietly become fiction until the mirror is updated. The
 summary also reports guards that ran and *held*, and flags a guard that
 printed no verdict at all.
 
-**CI** (`.github/workflows/tests.yml`) runs the fast tier on every push, on `ubuntu-latest`. The job is blocking: a
-failing suite fails the build.
+**CI** runs on `ubuntu-latest`. `.github/workflows/tests.yml` runs the fast tier on every push and pull request; the
+job is blocking, so a failing suite fails the build. `.github/workflows/full-tests.yml` runs the full tier nightly and
+on demand (`workflow_dispatch`).
 
 The ledger (`backend/orgtree/ledger.py`) is the single source of truth for
 credits, authority, addressing, and capability subsets; the supervisor
