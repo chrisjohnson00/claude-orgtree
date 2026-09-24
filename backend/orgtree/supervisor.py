@@ -77,16 +77,6 @@ def workspace_usage_bytes(org: Org, max_age: float = 0.0) -> int:
         hit = _ws_usage_cache.get(slug)
         if hit and time.time() - hit[0] < max_age:
             return hit[1]
-    # a disk-migrated org's entire footprint is its disk: df INSIDE the
-    # distro is exact and instant — never 9p-walk 99k files over UNC
-    if sbx.is_sandboxed(org) and sbx.on_disk(slug):
-        from . import disk as dsk
-        du = dsk.usage(slug, max_age=max(max_age, 5.0))
-        if du is not None:
-            _ws_usage_cache[slug] = (time.time(), du[0])
-            return du[0]
-        hit = _ws_usage_cache.get(slug)
-        return hit[1] if hit else 0
     total = 0
     ws = org.d.get("workspace")
     roots = [p for p in (ws, store.scratch_root(slug))
@@ -2752,17 +2742,11 @@ def working_count(slug: str) -> int:
 def scratch_dir(slug: str, nid: str) -> str:
     # lineage nodes ("name@gen") share their successor's scratch — they are the same
     # self at different times, and the CLAUDE.md self-notes belong to that self.
-    # A disk-migrated org's scratch lives ON the disk (UNC view for the backend).
-    if sbx.on_disk(slug):
-        from . import disk as dsk
-        base = dsk.windows_sub(slug, "scratch")
-    else:
-        base = store.scratch_root(slug)
-    p = os.path.join(base, nid.split("@")[0])
+    p = os.path.join(store.scratch_root(slug), nid.split("@")[0])
     if not os.path.isdir(p):
         os.makedirs(p, exist_ok=True)
-        # backend-minted = root-owned inside a sandbox (UNC writes arrive as
-        # root; the CLI runs as agent) — hand a NEW node dir over immediately,
+        # backend-minted = owned by the backend's uid, not the container's
+        # agent (the CLI runs as agent) — hand a NEW node dir over immediately,
         # or its first turn cannot write its own cwd (live bug 2026-08-04)
         try:
             org = store.load_org(slug)
@@ -3304,11 +3288,7 @@ def rename_node(slug: str, nid: str, new_name: str,
         # ---- filesystem, before save: scratch dir + CLI project dir ----
         moved: list[tuple[str, str]] = []
         try:
-            if sbx.on_disk(slug):
-                from . import disk as dsk
-                base = dsk.windows_sub(slug, "scratch")
-            else:
-                base = store.scratch_root(slug)
+            base = store.scratch_root(slug)
             old_dir, new_dir = (os.path.join(base, nid),
                                 os.path.join(base, new))
             # the CLI project dir rides the CWD — container path for sandboxed
@@ -8114,10 +8094,9 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
     # retire). Held and abandoned at commit 2e0eb47. LENGTH IS NOT THE COST;
     # STABILITY IS. Do not re-derive it.
     # ⚠ DERIVED FROM `scratch_dir`, NOT REBUILT FROM `store.scratch_root`. A
-    # DISK-MIGRATED org keeps its scratch on the disk (`dsk.windows_sub`), so a
-    # root composed from the data root would name a directory the agents' own
-    # folders are not under — granting a real path that covers nothing, which
-    # fails silently as "the file tools stopped reaching my reports". Taking the
+    # root composed separately can drift from where the agents' own folders
+    # actually live — granting a real path that covers nothing, which fails
+    # silently as "the file tools stopped reaching my reports". Taking the
     # parent of the same function that mints the per-node dirs cannot drift.
     root = (os.path.dirname(sbx.cpath_scratch(slug, nid)) if sandboxed
             else os.path.dirname(scratch_dir(org.d["slug"], nid)))
@@ -9424,10 +9403,6 @@ def _auto_wake_gates_clear(org: Org, nid: str) -> bool:
             or n.get("inflight")):
         return False
     if org.d.get("spend_frozen"):
-        return False
-    # Match the real turn's disk-org admission gate. Host-folder orgs use the
-    # watchdog's ACL barrier instead and are not turn-blocked by this flag.
-    if org.d.get("storage_blocked") and sbx.on_disk(org.d["slug"]):
         return False
     if org.waking_mail(nid):
         return False
@@ -14226,13 +14201,6 @@ def _run_one_turn_recorded(slug: str, nid: str,
                 if org.d.get("spend_frozen"):
                     raise RuntimeError("kiosk spend limit reached — frozen "
                                        "until the limit is raised (admin side)")
-                if org.d.get("storage_blocked") and sbx.on_disk(slug):
-                    # disk-org soft cap (user verdict): the last 10% is the
-                    # journaling reserve — new turns wait it out
-                    raise RuntimeError(
-                        "org disk past its 90% soft cap — turns are paused "
-                        "until usage drops under 85% (delete files, use the "
-                        "recovery browser, or grow the disk)")
                 if org.node(nid).get("limit_locked"):
                     raise RuntimeError(
                         "halted: weekly Fable usage limit exhausted — waiting for the "
@@ -21059,86 +21027,18 @@ def _storage_ev(org: Org, level: str, scope: str, used_mb: float,
                        scope=scope)
 
 
-def _storage_check_disk(slug: str, org: Org) -> str | None:
-    """Storage enforcement for a DISK-MIGRATED org (user verdict): the ext4
-    cap itself is the hard limit (ENOSPC — no container stop, no ACL, ever);
-    this check runs the SOFT tiers. 80% warns every live node; 90% BLOCKS NEW
-    TURNS (the enforceable ext4 mapping of "agents blocked, engine keeps
-    journaling" — mail queues, the UI and the recovery path stay live, and
-    the last 10% is the reserve that lets in-flight turns journal their
-    transcripts); ≤85% auto-clears. ≥99% sets the hard-full flag the
-    recovery-browser alert renders persistently."""
-    from . import disk as dsk
-    du = dsk.usage(slug, max_age=5.0)
-    if du is None:
-        return None          # disk unmounted: nothing can write; ensure_container refuses anyway
-    used, total = du
-    frac = used / total if total else 0.0
-    nudge: list[str] = []
-    with store.DOC_LOCK:
-        org = store.load_org(slug)
-        blocked = bool(org.d.get("storage_blocked"))
-        warned = bool(org.d.get("storage_warned"))
-        full = bool(org.d.get("storage_full"))
-        live = [i for i, n in org.nodes.items() if n["state"] == "live"]
-        mb = 1048576
-        result: str | None = None
-        if frac >= 0.99 and not full:
-            org.d["storage_full"] = True     # stage-4 alert state (persistent)
-            result = "full"
-        elif full and frac < 0.99:
-            org.d.pop("storage_full", None)
-            result = result or None
-        if frac >= 0.90 and not blocked:
-            org.d["storage_blocked"] = True
-            org._notify_ev(live, _storage_ev(org, "over", "disk", used / mb, total / mb))
-            nudge = live
-            result = "blocked"
-        elif blocked and frac <= 0.85:
-            org.d.pop("storage_blocked", None)
-            org.d.pop("storage_warned", None)
-            org._notify_ev(live, _storage_ev(org, "cleared", "disk", used / mb, total / mb))
-            result = "cleared"
-        elif frac >= 0.80 and not blocked and not warned:
-            org.d["storage_warned"] = True
-            org._notify_ev(live, _storage_ev(org, "heads_up", "disk", used / mb, total / mb))
-            nudge = live
-            result = "warned"
-        elif warned and frac < 0.75:
-            org.d.pop("storage_warned", None)   # re-arm below 75%
-        if result:
-            store.save_org(org)
-    if not result:
-        return None
-    for nid in nudge:
-        try:
-            if state(slug, nid)["busy"]:
-                send_message(slug, nid,
-                             "(orgtree) ⚠ Storage notice in your mail above — "
-                             "act on it NOW, mid-task.")
-        except Exception:                       # noqa: BLE001 — best-effort
-            pass
-    notify(slug, "", "storage_" + result)
-    return result
-
-
 def storage_check(slug: str) -> str | None:
-    """Storage enforcement dispatch. Disk-migrated sandboxed orgs → the soft
-    tiers over the ext4 cap (_storage_check_disk). Unsandboxed kiosks with a
-    loose cap → the icacls write-block below (D-031: an unsandboxed kiosk
-    bounds configuration and money, not capability — checked between turns).
-    Sandboxed-but-not-yet-migrated orgs enforce nothing here: their disk and
-    its cap arrive with the first container need. The pre-disk sandbox
-    enforcement (volume measurement → container stop → storage freeze) is
-    RETIRED (user ruling 2026-08-01, D-063)."""
+    """Storage enforcement for unsandboxed kiosks with a storage limit: the
+    tiers below warn near the limit and set `storage_blocked` over it, which
+    the turn gates honour (D-031: an unsandboxed kiosk bounds configuration
+    and money, not capability — checked between turns). Sandboxed orgs have
+    no storage cap and enforce nothing here."""
     # №22: the full workspace walk runs OUTSIDE the doc lock — it reads the
     # filesystem, not the doc, and holding DOC_LOCK across a multi-GB walk
     # starved the whole turn machinery (and timed out MCP calls into
     # duplicate-mail retries)
     org = store.load_org(slug)
     if sbx.is_sandboxed(org):
-        if sbx.on_disk(slug):
-            return _storage_check_disk(slug, org)
         return None
     used = workspace_usage_bytes(org)
     nudge: list[str] = []      # live nodes to steer mid-turn after the lock
@@ -25974,21 +25874,11 @@ def forget(slug: str, nids: Iterable[str]) -> None:
     """After a user delete of NODES: drop runtime state and remove org-owned
     scratch dirs. Lineage ids share their base's scratch, so only base ids
     delete directories; session transcripts under ~/.claude are deliberately
-    left alone.
-
-    ⚠ The scratch base must branch on the DISK-MIGRATED case exactly like
-    scratch_dir() does (redteam 2026-08-05): rmtree aimed at
-    store.scratch_root for a disk-migrated org deleted a path that never
-    existed — ignore_errors swallowed the miss and the agent's working
-    folder stayed on the org disk forever, counted against its quota."""
+    left alone."""
     import shutil
     nids = set(nids)
     forget_state(slug, nids)
-    if sbx.on_disk(slug):
-        from . import disk as dsk
-        base = dsk.windows_sub(slug, "scratch")
-    else:
-        base = store.scratch_root(slug)
+    base = store.scratch_root(slug)
     for nid in {n for n in nids if "@" not in n}:
         shutil.rmtree(os.path.join(base, nid), ignore_errors=True)
 

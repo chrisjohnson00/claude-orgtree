@@ -34,7 +34,7 @@ function tree(over: Record<string, unknown> = {}): TreePayload {
     fable_limit_policy: 'halt', fable_filter_policy: 'halt',
     auto_cheap_compact: { enabled: false, occ: 0.5 },
     auto_resume_compact: false,
-    kiosk: null, sandboxed: false, disk: null, net: { hubs: [] },
+    kiosk: null, sandboxed: false, net: { hubs: [] },
     ...over,
   } as unknown as TreePayload
 }

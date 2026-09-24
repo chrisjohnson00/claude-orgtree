@@ -16,7 +16,7 @@
     "level": "over",
     "used_mb": 920.0,
     "cap_mb": 1000.0,
-    "scope": "disk"
+    "scope": "storage"
   },
   "public": {
     "v": 1,
@@ -32,7 +32,7 @@
     "level": "over",
     "used_mb": 920.0,
     "cap_mb": 1000.0,
-    "scope": "disk"
+    "scope": "storage"
   },
-  "body": "⚠ The org disk is at 920 of 1000 MB (past the 90% soft cap). New turns are PAUSED until usage drops under 85% — the remaining space is the reserve that keeps session journaling alive. Delete files (the admin can also use the recovery browser or grow the disk); at 100% every write fails with ENOSPC."
+  "body": "⚠ The org is OVER its storage limit (920.0 / 1000 MB — workspace + scratch + uploads together). File creation and writes in the workspace and every scratch folder are now BLOCKED at the OS level — new writes will fail with permission errors. Deleting still works: remove large files you created and the block lifts automatically at the next check. Do NOT keep generating files."
 }

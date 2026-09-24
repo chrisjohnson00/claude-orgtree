@@ -330,10 +330,7 @@ Every `.overlay` becomes a full-bleed sheet at compact: `inset: 0`, radius 0, 44
 `padding: 16px`, **`position: sticky` footer** + safe-area (fixes save-below-the-fold). `.mailer`
 two-pane → single pane with list→read push navigation and a back chevron. Org drawer gains
 `overflow-y: auto` — **it is not a scroll container today, so the NewOrg submit row is
-unreachable**. DiskBrowser rows become 56 px two-line (name middle-ellipsis + size, dim parent
-path) and **the full path must leave `title=`** — this is the emergency surface used when the
-disk is hard-full and a phone has no hover. Disk-full banner wraps, is dismissible, and sets
-`--banner-h` offsetting `main`'s padding (today it buries the hamburger). Orgbar collapses from
+unreachable**. Orgbar collapses from
 12-14 wrapping chips to one 44 px row: ☰ · org name · one merged status chip · ⋯ overflow.
 `main` padding `18px → 0` at compact — recovers 36 px, 10% of a 375 px screen, and raises
 `min(vpW,vpH)` from 339 to 375.
@@ -404,7 +401,7 @@ the §0-§8 cites are stale (styles.css 1,732 → 2,247 lines, OrgCanvas.tsx →
   with the two §1 cliffs (sub-346px no-desk; landscape switchboard gate — `centerOn` now floors
   at `Z_DESK`).
 - **§3 item 1 done.** Items 2-10 remain open (verified: CreditBar threshold still absent, both
-  armed-delete sites still `onMouseLeave`-disarmed at App.tsx:1392 + DiskBrowser.tsx:217, all
+  armed-delete sites still `onMouseLeave`-disarmed, all
   four `opacity: 0` controls intact, index.html meta unchanged, still zero
   resize/visualViewport/matchMedia listeners, still only one `@media` — `prefers-reduced-motion`).
 - **§2-③'s TS-side duplication is half-fixed**: `DESK_SCALE = 0.13333` is now the one TS
@@ -607,8 +604,7 @@ scroll wrapper (§9.4-14).
 - **iOS keyboard pinning is best-effort**: `interactive-widget` +`dvh` +
   visualViewport re-fit, but no composer-follows-keyboard transform. Known
   rough edge on iOS Safari.
-- **DiskBrowser 56px two-line rows and the remaining title=-only promotions
-  (§5.4, §9.3)** are deferred — full-bleed + 3s disarm shipped; the data
+- **The remaining title=-only promotions (§9.3)** are deferred — full-bleed + 3s disarm shipped; the data
   promotions are follow-up polish.
 
 **Verification state.** tsc clean, frontend tests 83/83, vite build green.

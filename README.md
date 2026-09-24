@@ -210,9 +210,7 @@ The full interaction manual — every gesture, badge, and panel — is
 - **Node.js 18+** (builds the frontend)
 - **Linux** for the host.
 - **Sandboxed orgs** (and kiosks, which default the sandbox on) additionally
-  require **Windows with Docker Desktop's WSL2 backend**: each org's virtual
-  disk is loop-mounted inside the docker-desktop WSL distro and the backend
-  reads it via `\\wsl.localhost`.
+  require a running **Docker** daemon the backend's user can reach.
 
 ## Installation
 
@@ -521,11 +519,8 @@ the admin side, keep full rights in the same org — visit it like any other):
   they can clean up before anything bites. Breaching it does *not* freeze
   anyone: file creation and writes in the workspace are blocked (on Windows,
   enforced at the OS level with delete rights kept) until enough files are
-  deleted — the block lifts automatically. (That is the *unsandboxed*
-  kiosk's loose cap. A sandboxed kiosk's storage limit is the size of its
-  virtual disk: soft tiers warn at 80% and pause new turns at 90%, and at
-  100% writes fail with ENOSPC — disk orgs are never frozen or stopped for
-  storage, and the in-app recovery browser works even then.)
+  deleted — the block lifts automatically. This loose cap applies only to
+  *unsandboxed* kiosks; sandboxed orgs have no storage cap.
 
 Kiosk orgs are a **distinct type**: born as kiosks with their limits set at
 creation (the *new organization* form's kiosk checkbox), never converted to
@@ -539,40 +534,20 @@ it): all its agents' turns run inside one dedicated **Docker container** —
 real terminal use with no view of your machine: no host filesystem, no host
 processes, per-container CPU/memory caps. The org workspace is the one
 deliberately mounted window; session transcripts persist in the agent home
-on the org's virtual disk (next paragraph) so resume, chat views, and
-read-down keep working — for a migrated org, `<data>/sandboxes/<slug>/`
-holds only the frozen pre-migration rollback copy, while the live home
-(transcripts included) rides the disk, reachable via `\\wsl.localhost` and
-the in-app storage browser.
+(`<data>/sandboxes/<slug>/home` on the host) so resume, chat views, and
+read-down keep working.
 The container reaches the backend only through a **bridge listener**
 (`ORGTREE_BRIDGE_PORT`, default 7362) gated by a per-org secret that exists
 nowhere but inside that container. Requires Docker Desktop running; the
 image builds automatically on first use (`sandbox/Dockerfile`).
 
-**Every sandboxed org rides ONE virtual disk with a real filesystem cap.**
-The org's whole state — system dirs (`sudo apt install` and config edits work
-and persist), the agent home *including session transcripts*, the workspace,
-and scratch — lives on a fixed-size ext4 image (a loop mount inside Docker
-Desktop's WSL distro; no admin rights involved). The rootfs is read-only,
-`/tmp` is RAM (bounded by the memory cap), and `/usr/local` is a read-only
-version-pinned volume so the CLI can't drift. The cap is the filesystem
-itself: at 100% writes fail with ENOSPC — the container is **never stopped**.
-Soft tiers run underneath: at 80% agents are warned, at 90% new turns pause
-(the last 10% is the reserve that keeps session journaling alive) and resume
-automatically under 85%. Disk size comes from the kiosk storage limit, the
-org's `sandbox.limit_mb`, or `ORGTREE_SANDBOX_DISK_MB` (default 20 GB);
-existing volume-layout orgs auto-migrate on their next turn (old volumes are
-kept for rollback). The backend reads the disk directly (`\\wsl.localhost`) —
-including deletes at 100% full — so recovery never depends on the container.
-
-> ☞ **Set Docker Desktop's disk cap.** Org disks are SPARSE: a 20 GB cap costs
-> the host only what's actually written, which keeps generosity free — but it
-> also means N orgs can overcommit the host in aggregate. Each org's own cap
-> is absolute (its ext4 size), while the **aggregate** bound is Docker
-> Desktop → Settings → Resources → *Disk usage limit*. The default is a
-> ~1 TB sparse disk — set it to what you can afford; the backend logs a
-> warning when it's unset. (The WSL2 disk file also does not shrink on its
-> own when content is deleted.)
+**Container storage.** The rootfs is read-only, `/tmp` is RAM (bounded by the
+memory cap), and `/usr/local` is a read-only version-pinned volume so the CLI
+can't drift. System dirs (`/usr`, `/var`, `/etc`, `/opt`, `/root`, `/srv`) are
+per-org named Docker volumes, so `sudo apt install` and config edits persist.
+The agent home, the workspace, and scratch are host bind mounts under the
+data root. There is no per-org storage cap: a sandboxed org can fill the host
+disk, so watch Docker's and the data root's usage yourself.
 
 Sandbox auth is the **proxied subscription** and is not configurable in the
 UI: the container's CLI talks to the bridge's Anthropic passthrough, and the

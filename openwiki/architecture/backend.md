@@ -152,8 +152,7 @@ turn transcript and the UI's live per-message/per-tool feed.
 - `deployment.py` — machine-wide policy (`standard` vs `frozen`), consumed
   everywhere rather than re-parsed; see
   [Deployment and configuration](../operations/deployment-and-config.md).
-- `sandbox.py` / `disk.py` — Docker-per-org isolation and per-org virtual
-  disks with hard caps for kiosk orgs (backlogged for a deep-dive; see
+- `sandbox.py` — Docker-per-org isolation (backlogged for a deep-dive; see
   [quickstart backlog](../quickstart.md#backlog)).
 - `bridgeauth.py` / `frozen_gateway.py` / `frozen_install.py` — rotatable
   bridge credentials, a locked-down relay, and attestation for the frozen

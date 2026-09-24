@@ -13,25 +13,16 @@ references in any suite. This is also where the security ceiling lives: the
 container is the boundary, and the bridge secret is the one key that opens
 the door out of it.
 
-⚠ `disk.py` mounts every org onto an ext4 image inside Docker Desktop's WSL2
-distro, which only exists on Windows — it cannot run on this (Linux) host at
-all. `ensure_container` calls into it unconditionally, so the checks below
-stub `disk.create`/`mount`/`windows_sub`/etc. with a plain directory tree
-just enough to let Docker-argv checks run; disk.py's own lifecycle (create
-size, shrink, destroy, migration, the recovery browser that walks a real
-mounted disk) is WSL-only and is not exercised by this suite. `disk.py`
-itself is out of scope and untouched.
-
 THE TWO TIERS
 -------------
-① HERMETIC — the default. ~10 s, no Docker, no WSL, no network, no model
+① HERMETIC — the default. ~10 s, no Docker, no network, no model
   call. `sandbox._docker(*args)` is a recording fake daemon (images,
   containers, volumes, labels), so ensure_container's REAL argv reaches an
   assertion — every security property of the sandbox IS a flag in that argv.
 
-② --docker — the real thing, but only as far as WSL allows on this host:
-  builds the real image and confirms it is tagged with the host CLI version.
-  Skips with a stated reason when the daemon is down.
+② --docker — the real thing: builds the real image, starts a real
+  container, and confirms its mounts match the contract §2 asserts on the
+  argv. Skips with a stated reason when the daemon is down.
 
 ⚠ ISOLATION. Everything created here is named `zzsbx-*` (slug prefix), lives
 under a throwaway ORGTREE_DATA, and is torn down in an atexit hook that
@@ -41,11 +32,11 @@ orgs (`game-club`, `resonite`) are unsandboxed and are never loaded.
     §1  identity, config and paths            (no Docker)
     §2  the container contract                (fake daemon)
     §3  the bridge — the one door out         (ASGI + a real uvicorn on 7407)
-    §5  the soft cap and the hard cap
+    §5  storage enforcement is off for sandboxed orgs
     §6  the sandboxed turn
     §7  subproxy — the OAuth refresh
     §8  creation-time rules
-    §9  real Docker                           (--docker only; image build only)
+    §9  real Docker                           (--docker only)
 
 One defect was reproduced RED and FIXED in this suite's own files
 (subproxy.py's never-updated `refreshTokenExpiresAt`); the rest are printed
@@ -100,7 +91,6 @@ os.environ.pop("ORGTREE_EXPOSE_ADMIN", None)
 
 from orgtree import (api, sandbox, store, subproxy,              # noqa: E402
                      supervisor)
-from orgtree import disk as dsk                                  # noqa: E402
 from orgtree.ledger import USER                                  # noqa: E402
 
 
@@ -113,7 +103,6 @@ assert DATA != os.path.expanduser("~/orgtree"), "refusing to run on the real dat
 
 supervisor.chatq_register_org = lambda slug: None
 supervisor.chatq_deregister_org = lambda slug: None
-sandbox.vm_disk_cap_mib = lambda: None
 _warmed: list[str] = []
 REAL_WARM = sandbox.warm          # §2 drives the real one; §8 counts calls
 sandbox.warm = lambda org: _warmed.append(org.d["slug"])
@@ -122,12 +111,6 @@ PASS = 0
 NOTES: list[str] = []
 FIXED: list[str] = []
 SKIPS: list[str] = []
-
-# `disk.distro()` shells out to `wsl -l -q`, which does not exist on this
-# host. Pinning the cache means any accidental real call before §2 installs
-# its stub (see below) returns a name instead of crashing.
-dsk._distro_cache = "docker-desktop"
-
 
 def check(label, fn):
     global PASS
@@ -169,7 +152,7 @@ def section(name):
 
 
 # --------------------------------------------------------------- fixtures
-def mkorg(name, *, kiosk=False, sandboxed=True, secret=None, disk=None,
+def mkorg(name, *, kiosk=False, sandboxed=True, secret=None,
           kiosk_enabled=True, api_key=None):
     """An org doc straight through store (the create-path itself is §8)."""
     org = store.create_org(PFX + name)
@@ -188,8 +171,6 @@ def mkorg(name, *, kiosk=False, sandboxed=True, secret=None, disk=None,
                             **({"api_key": api_key} if api_key else {})}
         elif sandboxed:
             o.d["sandbox"] = {"enabled": True, "secret": secret or ("b2" * 16)}
-        if disk:
-            o.d["disk"] = dict(disk)
         store.save_org(o)
     return store.load_org(slug)
 
@@ -295,35 +276,11 @@ if section("§1  identity, config and paths"):
         finally:
             os.environ.pop("ORGTREE_SANDBOX_API_KEY")
 
-    @t("sandbox_home is the host sandbox dir until the org rides a disk")
+    @t("sandbox_home is the host sandbox dir")
     def _():
         s = O_KIOSK.d["slug"]
-        sandbox._disk_flag.pop(s, None)
         assert sandbox.sandbox_home(s) == \
             os.path.join(DATA, "sandboxes", s, "home")
-        assert not sandbox.on_disk(s)
-
-    @t("on_disk caches for ~10 s (hot paths must not re-load the doc)")
-    def _():
-        s = O_ORGSBX.d["slug"]
-        sandbox._disk_flag.pop(s, None)
-        assert not sandbox.on_disk(s)
-        with store.DOC_LOCK:
-            o = store.load_org(s)
-            o.d["disk"] = {"size_mb": 4096}
-            store.save_org(o)
-        assert not sandbox.on_disk(s), "the cache should still say no"
-        sandbox._disk_flag.pop(s, None)
-        assert sandbox.on_disk(s)
-        with store.DOC_LOCK:
-            o = store.load_org(s)
-            o.d.pop("disk")
-            store.save_org(o)
-        sandbox._disk_flag.pop(s, None)
-
-    @t("on_disk fails CLOSED for an unreadable org doc")
-    def _():
-        assert not sandbox.on_disk("no-such-org-" + PFX)
 
     @t("the /usr/local volume name carries the CLI version AND the image rev")
     def _():
@@ -331,15 +288,6 @@ if section("§1  identity, config and paths"):
             f"orgtree-usrlocal-2.1.220-{sandbox.IMG_REV}"
         assert sandbox.usrlocal_volume("2.1.221") != \
             sandbox.usrlocal_volume("2.1.220"), "a CLI move must move the volume"
-
-    @t("_parse_size reads docker's SI human sizes")
-    def _():
-        assert sandbox._parse_size("0B") == 0
-        assert sandbox._parse_size("5.34MB") == 5340000
-        assert sandbox._parse_size("1.06GB") == 1060000000
-        assert sandbox._parse_size("12") == 12
-        assert sandbox._parse_size("nonsense") == 0
-        assert sandbox._parse_size("") == 0
 
 
 # ================================================================== §2
@@ -440,60 +388,18 @@ class FakeDocker:
             return self.cp(a, 0)
         if a[:1] == ["exec"]:
             return self.cp(a, 0)
-        if a[:2] == ["system", "df"]:
-            return self.cp(a, 0, json.dumps([
-                {"Name": "orgtree-sys-x-usr", "Size": "1.5GB"}]))
         return self.cp(a, 0)
-
-
-# disk.py mounts every org over `wsl -d <distro> …`, which cannot run on this
-# host at all (no WSL). §2's real target is `ensure_container`'s Docker argv,
-# but that function calls `dsk.mount`/`dsk.create` unconditionally before it
-# ever touches Docker, so the container-contract checks below still need
-# something answering those calls. This stub plays that role: a real
-# directory tree stands in for "the disk" and every call just succeeds. It
-# does not simulate disk LIFECYCLE (create size, shrink, destroy, migration)
-# — that is WSL/disk.py's own concern and is not exercised here.
-_DISK_ROOT = os.path.join(DATA, "fakedisks")
-_disk_orig = {k: getattr(dsk, k) for k in
-             ("create", "mount", "unmount", "destroy", "usage",
-              "mount_path", "windows_path", "windows_sub",
-              "shrink_image", "grow", "is_mounted")}
-_disk_mounted: set[str] = set()
-
-
-def _install_disk_stub():
-    dsk.create = lambda slug, mb: _disk_mounted.add(slug)
-    dsk.mount = lambda slug: _disk_mounted.add(slug)
-    dsk.unmount = lambda slug: None
-    dsk.destroy = lambda slug: None
-    dsk.usage = lambda slug, max_age=15.0: (1 << 20, 4096 << 20)
-    dsk.is_mounted = lambda slug: slug in _disk_mounted
-    dsk.mount_path = lambda slug: f"/mnt/wsl/orgtree-disk/{slug}"
-    dsk.windows_path = lambda slug: os.path.join(_DISK_ROOT, slug)
-    dsk.windows_sub = lambda slug, sub: os.path.join(_DISK_ROOT, slug, sub)
-    dsk.shrink_image = lambda slug, mb: None
-    dsk.grow = lambda slug, mb: None
-
-
-def _restore_disk():
-    for k, v in _disk_orig.items():
-        setattr(dsk, k, v)
 
 
 if section("§2  the container contract"):
     FD = FakeDocker()
     sandbox._docker = FD
     supervisor.cli_version = lambda: "2.1.220"
-    _install_disk_stub()
     TAG = f"orgtree-sandbox:2.1.220-{sandbox.IMG_REV}"
 
     def fresh(name, **kw):
         FD.calls.clear()
-        o = mkorg(name, disk={"size_mb": 4096}, **kw)
-        sandbox._disk_flag.pop(o.d["slug"], None)
-        os.makedirs(os.path.join(_DISK_ROOT, o.d["slug"], "home"), exist_ok=True)
-        return o
+        return mkorg(name, **kw)
 
     def mounts(argv):
         return [argv[i + 1] for i, x in enumerate(argv) if x == "-v"]
@@ -547,9 +453,11 @@ if section("§2  the container contract"):
     NAME_A = sandbox.container_name(SLUG_A)
     assert sandbox.ensure_container(ORG_A) == NAME_A
     RUN = FD.last_run()
-    MP = f"/mnt/wsl/orgtree-disk/{SLUG_A}"
+    HOME_A = sandbox.sandbox_home(SLUG_A)
+    WS_A = ORG_A.d["workspace"]
+    SCRATCH_A = store.scratch_root(SLUG_A)
 
-    @t("☠ the rootfs runs READ-ONLY (no unmeasured writable surface)")
+    @t("☠ the rootfs runs READ-ONLY (writes land only in volumes and binds)")
     def _():
         assert "--read-only" in RUN, RUN
 
@@ -565,23 +473,47 @@ if section("§2  the container contract"):
         assert RUN[RUN.index("--memory") + 1] == sandbox.MEM
         assert RUN[RUN.index("--cpus") + 1] == sandbox.CPUS
 
-    @t("☠ every persistent path is on the org's OWN disk image")
+    @t("☠ system dirs are the org's OWN named volumes")
     def _():
         m = mounts(RUN)
         for d in sandbox.SYS_DIRS:
-            assert f"{MP}/{d}:/{d}" in m, (d, m)
-        assert f"{MP}/home:/home/agent" in m, m
-        assert f"{MP}/workspace:{sandbox.cpath_workspace(SLUG_A)}" in m, m
-        assert f"{MP}/scratch:{sandbox.cpath_data()}/scratch/{SLUG_A}" in m, m
+            assert f"{sandbox.sys_volume(SLUG_A, d)}:/{d}" in m, (d, m)
 
-    @t("☠ the ONLY host-filesystem bind is the backend, READ-ONLY")
+    @t("☠ home, workspace and scratch are the org's OWN host dirs")
     def _():
+        m = mounts(RUN)
+        assert f"{HOME_A}:/home/agent" in m, m
+        assert f"{WS_A}:{sandbox.cpath_workspace(SLUG_A)}" in m, m
+        assert f"{SCRATCH_A}:{sandbox.cpath_data()}/scratch/{SLUG_A}" in m, m
+        for p in (HOME_A, WS_A, SCRATCH_A):
+            assert os.path.isdir(p), p
+
+    @t("☠ the ONLY other host bind is the backend, READ-ONLY")
+    def _():
+        own = {HOME_A, WS_A, SCRATCH_A}
         host = [s for s in mounts(RUN)
-                if not s.startswith(MP + "/") and not s.startswith("orgtree-")]
+                if s.split(":", 1)[0] not in own and not s.startswith("orgtree-")]
         assert host == [f"{sandbox.BACKEND_DIR}:/opt/orgtree-backend:ro"], host
-        # ⚠ the data root (org docs, every other org's disk, the user's home)
-        # is NOT reachable from inside
-        assert not any(DATA in s for s in mounts(RUN)), mounts(RUN)
+        # ⚠ the data root itself (org docs, every other org's dirs) is NOT
+        # reachable from inside
+        assert not any(s.split(":", 1)[0] == DATA for s in mounts(RUN)), \
+            mounts(RUN)
+
+    @t("a sandboxed org with no workspace recorded is refused, not bound")
+    def _():
+        o = fresh("c6", secret="66" * 16)
+        with store.DOC_LOCK:
+            o2 = store.load_org(o.d["slug"])
+            o2.d.pop("workspace", None)
+            store.save_org(o2)
+        FD.calls.clear()
+        try:
+            sandbox.ensure_container(store.load_org(o.d["slug"]))
+            raise AssertionError("ran with no workspace")
+        except RuntimeError as e:
+            assert "no workspace directory recorded" in str(e), e
+        assert not FD.find("run"), FD.calls
+        drop(o.d["slug"])
 
     @t("☠ /usr/local is the version-pinned READ-ONLY volume (the CLI is fixed)")
     def _():
@@ -611,9 +543,9 @@ if section("§2  the container contract"):
         assert env["ANTHROPIC_API_KEY"] == "orgtree-proxied"
         assert not any("sk-ant" in v for v in env.values()), env
 
-    @t("☠ .bridge is the only secret in the container, and it is on the disk")
+    @t("☠ .bridge is the only secret in the container, in the sandbox home")
     def _():
-        p = os.path.join(_DISK_ROOT, SLUG_A, "home", "orgtree", ".bridge")
+        p = os.path.join(HOME_A, "orgtree", ".bridge")
         b = json.load(open(p, encoding="utf-8"))
         assert b == {"url": "http://host.docker.internal:7407",
                      "secret": "11" * 16}, b
@@ -736,16 +668,12 @@ if section("§2  the container contract"):
             sandbox.ensure_container(o)
             run = FD.last_run()
             assert not [x for i, x in enumerate(run) if x == "-e"], run
-            dst = os.path.join(_DISK_ROOT, o.d["slug"], "home", ".claude",
+            dst = os.path.join(sandbox.sandbox_home(o.d["slug"]), ".claude",
                                ".credentials.json")
             assert "HOST-TOKEN" in open(dst, encoding="utf-8").read()
         finally:
             os.path.expanduser = real_exp
             os.environ.pop("ORGTREE_SANDBOX_API_KEY")
-        note("subscription auth writes the HOST's OAuth token onto the org "
-             "disk; the browser's only defence is a FILENAME denylist "
-             "(_PUBLIC_DISK_DENY) and root-in-container can copy it "
-             "elsewhere — see §3's copy-vector reproduction.")
         drop(o.d["slug"])
 
     @t("subscription auth with no credentials file on the host is refused")
@@ -765,18 +693,7 @@ if section("§2  the container contract"):
             os.environ.pop("ORGTREE_SANDBOX_API_KEY")
         drop(o.d["slug"])
 
-    # ---- the staged shrink
-    @t("try_apply_pending_resize is a no-op when nothing is pending")
-    def _():
-        assert sandbox.try_apply_pending_resize(store.load_org(SLUG_A)) is None
-
     # ---- teardown levers
-    @t("stop_container gives the CLI 20 s to flush its transcript")
-    def _():
-        FD.calls.clear()
-        sandbox.stop_container(SLUG_A)
-        assert FD.find("stop", "-t", "20", NAME_A), FD.calls
-
     @t("☞ kill_claude reaps ONE turn's process, not every agent's (№40)")
     def _():
         FD.calls.clear()
@@ -844,20 +761,6 @@ if section("§2  the container contract"):
         finally:
             FD.server_up = True
         drop(o.d["slug"])
-
-    @t("sandbox_volumes_bytes measures daemon-side and fails CLOSED on timeout")
-    def _():
-        sandbox._vol_usage_cache.clear()
-        assert sandbox.sandbox_volumes_bytes("x") == 1500000000
-        sandbox._vol_usage_cache.clear()
-        FD.timeouts.add("system")
-        try:
-            assert sandbox.sandbox_volumes_bytes("x") is None
-        finally:
-            FD.timeouts.discard("system")
-
-    _restore_disk()      # the real disk module returns for the rest of the suite
-
 
 # ================================================================== §3
 # The bridge is the ONE door out of the container. Requests are made by
@@ -982,9 +885,6 @@ if section("§3  the bridge — the one door out"):
         ("GET", "/api/host"), ("GET", "/api/defaults"), ("GET", "/api/mcp"),
         ("GET", f"/api/orgs/{SB1}"), ("POST", f"/api/orgs/{SB1}/settings"),
         ("POST", f"/api/orgs/{SB1}/ops"), ("DELETE", f"/api/orgs/{SB1}"),
-        ("GET", f"/api/orgs/{SB1}/disk"), ("GET", f"/api/orgs/{SB1}/disk/file"),
-        ("POST", f"/api/orgs/{SB1}/disk/delete"),
-        ("POST", f"/api/orgs/{SB1}/disk/resize"),
         ("GET", f"/api/orgs/{SB1}/nodes/alice/chat"),
         ("POST", f"/api/orgs/{SB1}/nodes/alice/message"),
         ("GET", f"/api/orgs/{SB1}/nodes/alice/scratch"),
@@ -1134,141 +1034,31 @@ if section("§3  the bridge — the one door out"):
 
 
 # ================================================================== §5
-if section("§5  the soft cap, the hard cap, the recovery browser"):
-    O5 = mkorg("cap1", kiosk=True, secret="5e" * 16, disk={"size_mb": 4096})
-    S5 = O5.d["slug"]
-    with store.DOC_LOCK:
-        _o = store.load_org(S5)
-        _o.hire(USER, None, "sonnet", 10, "alice", charter="c")
-        store.save_org(_o)
-    sandbox._disk_flag.pop(S5, None)
-    TOTAL = 4096 << 20
-    _usage = [TOTAL // 2]
-    _real_usage = dsk.usage
-    dsk.usage = lambda slug, max_age=15.0: (
-        (_usage[0], TOTAL) if slug == S5 and _usage[0] is not None
-        else (_real_usage(slug, max_age) if slug != S5 else None))
-
-    def at(frac):
-        _usage[0] = int(TOTAL * frac)
-        return supervisor._storage_check_disk(S5, store.load_org(S5))
-
-    def notices():
-        return (store.load_org(S5).d.get("notices") or {}).get("alice") or []
-
-    def flags():
-        d = store.load_org(S5).d
-        return (bool(d.get("storage_warned")), bool(d.get("storage_blocked")),
-                bool(d.get("storage_full")))
-
-    @t("an UNMOUNTED disk checks nothing (nothing can be writing to it)")
+if section("§5  storage enforcement is off for sandboxed orgs"):
+    @t("storage_check enforces nothing for a sandboxed org, even over its limit")
     def _():
-        _usage[0] = None
-        assert supervisor._storage_check_disk(S5, store.load_org(S5)) is None
-        assert flags() == (False, False, False)
+        o = mkorg("cap1", kiosk=True, secret="5e" * 16)
+        slug = o.d["slug"]
+        real_usage = supervisor.workspace_usage_bytes
+        supervisor.workspace_usage_bytes = lambda org, max_age=0.0: 1 << 40
+        try:
+            assert supervisor.storage_check(slug) is None
+        finally:
+            supervisor.workspace_usage_bytes = real_usage
+        d = store.load_org(slug).d
+        assert not d.get("storage_blocked") and not d.get("storage_warned"), d
+        drop(slug)
 
-    @t("half full: silence")
+    @t("☞ no turn gate pairs storage_blocked with a sandbox check")
     def _():
-        assert at(0.50) is None and flags() == (False, False, False)
+        """Sandboxed orgs never get `storage_blocked`, so a gate keyed on
+        the flag AND sandbox state is dead code. A drift guard: the flag's
+        remaining readers must not grow a sandbox-only branch back."""
+        here = os.path.dirname(supervisor.__file__)
+        for f in ("supervisor.py", "warmpool.py"):
+            src = open(os.path.join(here, f), encoding="utf-8").read()
+            assert not re.search(r'storage_blocked"\)\s+and\s+\w*\.?sbx\.', src), f
 
-    @t("80%: every LIVE node is warned once, not every check")
-    def _():
-        assert at(0.81) == "warned"
-        assert flags() == (True, False, False)
-        assert len(notices()) == 1, notices()
-        assert at(0.83) is None, "it warned twice"
-        assert len(notices()) == 1
-
-    @t("☠ 90%: new turns are BLOCKED — the last 10% is the journaling reserve")
-    def _():
-        assert at(0.91) == "blocked"
-        assert flags() == (True, True, False)
-        body = notices()[-1]["text"]
-        assert "90%" in body and "PAUSED" in body and "ENOSPC" in body, body
-
-    @t("☞ the turn gate reads exactly that flag, and only for disk orgs")
-    def _():
-        """The gate itself lives inline in `_run_turn`'s slot section, which
-        this suite deliberately does not drive (that is the turn-lifecycle
-        suite's territory). A drift guard instead: the two-condition gate
-        must still be there, so a refactor that drops it fails HERE."""
-        src = open(os.path.join(os.path.dirname(supervisor.__file__),
-                                "supervisor.py"), encoding="utf-8").read()
-        assert 'org.d.get("storage_blocked") and sbx.on_disk(slug)' in src, \
-            "the 90% turn gate moved or vanished"
-        assert "past its 90% soft cap" in src
-
-    @t("99%: the persistent hard-full alert state is set")
-    def _():
-        assert at(0.995) == "full"
-        assert flags() == (True, True, True)
-
-    @t("⚑ DEFECT: falling back into the 90–99% band never clears storage_full")
-    def _():
-        """`_storage_check_disk` pops the flag in memory but leaves `result`
-        None, and the doc is only saved `if result:` — so the pop is thrown
-        away. The admin's recovery browser keeps rendering the persistent
-        'disk is full' alert after the org has recovered to 95%, until it
-        happens to drop under 85% (which saves for another reason)."""
-        assert at(0.95) is None
-        w, b, full = flags()
-        assert full is True, "FIXED — retire this reproduction"
-        note("supervisor._storage_check_disk never PERSISTS the clearing of "
-             "`storage_full`: the 99%→90–99% transition pops the flag in "
-             "memory but sets no `result`, and the save is gated on `result`. "
-             "The hard-full alert sticks until usage drops under 85%. "
-             "(supervisor.py — reported, not fixed: not this suite's file.)")
-
-    @t("…and the same fall does NOT lift the 90% block (correctly)")
-    def _():
-        assert flags()[1] is True
-
-    @t("≤85%: turns resume and both soft flags clear together")
-    def _():
-        assert at(0.84) == "cleared"
-        assert flags() == (False, False, False), \
-            "the 85% clear is the only path that also persists the full-flag pop"
-        body = notices()[-1]["text"]
-        assert "back under the soft cap" in body and "resume" in body
-
-    @t("⚑ DEFECT (same root): the <75% re-arm is not persisted either, so a "
-       "second climb past 80% is SILENT")
-    def _():
-        """`elif warned and frac < 0.75: org.d.pop("storage_warned")` sets no
-        `result`, and the save is gated on `result` — exactly the storage_full
-        bug one branch up. An org that warned at 80%, dropped to 50% and
-        climbed back never warns again (the 90% block still fires, so the
-        agents' first notice of a storage problem is the turn pause)."""
-        at(0.81)
-        assert flags()[0] is True
-        assert at(0.50) is None
-        assert flags()[0] is True, "FIXED — retire this reproduction"
-        assert at(0.81) is None, "FIXED — it re-warned"
-        note("supervisor._storage_check_disk: the same unsaved-mutation bug "
-             "hits the <75% re-arm — `storage_warned` is popped in memory "
-             "only, so the 80% warning fires once per org LIFETIME unless a "
-             "90% block+clear cycle happens to save the doc. One fix covers "
-             "both: set a result (or save unconditionally when the doc "
-             "changed). supervisor.py — reported, not fixed.")
-        # put it back the only way the code actually persists
-        at(0.91), at(0.50)
-        assert flags() == (False, False, False), flags()
-
-    @t("storage_check dispatches sandboxed+migrated orgs to the disk tiers")
-    def _():
-        _usage[0] = int(TOTAL * 0.91)
-        assert supervisor.storage_check(S5) == "blocked"
-        _usage[0] = int(TOTAL * 0.50)
-        assert supervisor.storage_check(S5) == "cleared"
-
-    @t("a sandboxed org with NO disk yet enforces nothing (its cap is the disk)")
-    def _():
-        o = mkorg("cap2", secret="5f" * 16)
-        sandbox._disk_flag.pop(o.d["slug"], None)
-        assert supervisor.storage_check(o.d["slug"]) is None
-        drop(o.d["slug"])
-
-    dsk.usage = _real_usage
 
 # ================================================================== §6
 if section("§6  the sandboxed turn"):
@@ -1292,7 +1082,6 @@ if section("§6  the sandboxed turn"):
 
     @t("☞ a sandboxed org's transcripts live under <data>/sandboxes/<slug>/home")
     def _():
-        sandbox._disk_flag.pop(S6, None)
         assert supervisor._transcript_root(O6) == \
             os.path.join(SBXHOME, ".claude")
 
@@ -1870,19 +1659,14 @@ if section("§8  creation-time rules"):
     def create(**body):
         return call(ADMIN, "POST", "/api/orgs", body)
 
-    @t("☠ a sandboxed kiosk under the 4096 MB floor is refused at CREATION")
+    @t("a sandboxed kiosk accepts any storage limit (sandboxes have no cap)")
     def _():
-        r = create(name=PFX + "floor1",
+        r = create(name=PFX + "small1",
                    kiosk={"credits": 100, "storage_limit_mb": 256,
                           "sandbox": True})
-        assert r.status == 422 and "4096 MB minimum" in r.text, r
-        assert not os.path.exists(os.path.join(DATA, "orgs",
-                                               PFX + "floor1.json"))
-
-    @t("…and so is a sandboxed NORMAL org with a small disk_mb")
-    def _():
-        r = create(name=PFX + "floor2", sandbox=True, disk_mb=1024)
-        assert r.status == 422 and "at least 4096" in r.text, r
+        assert r.status == 200, r
+        assert store.load_org(r.json["slug"]).d["kiosk"]["storage_limit_mb"] == 256
+        drop(r.json["slug"])
 
     @t("an UNSANDBOXED kiosk may have any storage limit (it is a loose cap)")
     def _():
@@ -1923,21 +1707,14 @@ if section("§8  creation-time rules"):
     @t("a sandboxed NORMAL org gets the same isolation, no kiosk limits")
     def _():
         _warmed.clear()
-        r = create(name=PFX + "normsbx", sandbox=True, disk_mb=8192)
+        r = create(name=PFX + "normsbx", sandbox=True)
         assert r.status == 200, r
         d = store.load_org(r.json["slug"]).d
         assert d.get("kiosk") in (None, {}), d.get("kiosk")
-        assert d["sandbox"]["enabled"] and d["sandbox"]["limit_mb"] == 8192
+        assert set(d["sandbox"]) == {"enabled", "secret"}, d["sandbox"]
+        assert d["sandbox"]["enabled"]
         assert re.fullmatch(r"[a-f0-9]{32}", d["sandbox"]["secret"])
         assert _warmed == [r.json["slug"]]
-        drop(r.json["slug"])
-
-    @t("…and with no disk_mb it inherits the module default at migration")
-    def _():
-        r = create(name=PFX + "nodiskmb", sandbox=True)
-        d = store.load_org(r.json["slug"]).d
-        assert "limit_mb" not in d["sandbox"], d["sandbox"]
-        assert sandbox.DISK_MB >= 4096, sandbox.DISK_MB
         drop(r.json["slug"])
 
     @t("a plain org is never sandboxed, never warmed, and holds no secret")
@@ -1948,21 +1725,6 @@ if section("§8  creation-time rules"):
         assert not d.get("sandbox") and not d.get("kiosk"), d
         assert _warmed == [], _warmed
         drop(r.json["slug"])
-
-    @t("☠ the floor is re-enforced when the limit is EDITED, not only at birth")
-    def _():
-        r = create(name=PFX + "edit1", kiosk={"credits": 10,
-                                              "storage_limit_mb": 4096,
-                                              "sandbox": True})
-        slug = r.json["slug"]
-        bad = call(ADMIN, "POST", f"/api/orgs/{slug}/kiosk",
-                   {"storage_limit_mb": 512})
-        assert bad.status == 422 and "4096 MB minimum" in bad.text, bad
-        assert store.load_org(slug).d["kiosk"]["storage_limit_mb"] == 4096
-        ok = call(ADMIN, "POST", f"/api/orgs/{slug}/kiosk",
-                  {"storage_limit_mb": 10240})
-        assert ok.status == 200, ok
-        drop(slug)
 
     @t("☠ a subscription-auth sandbox cannot be given a PUBLIC kiosk URL")
     def _():
@@ -1999,7 +1761,7 @@ if section("§8  creation-time rules"):
 
     @t("deleting an org tears its sandbox down with it")
     def _():
-        r = create(name=PFX + "delsbx", sandbox=True, disk_mb=4096)
+        r = create(name=PFX + "delsbx", sandbox=True)
         slug = r.json["slug"]
         seen = []
         real = sandbox.remove
@@ -2019,10 +1781,10 @@ if section("§8  creation-time rules"):
 
 
 # ================================================================== §9
-# The real thing: a real image, a real ext4 disk in the real docker-desktop
-# distro, a real container — and then attacks on it. Everything created is
-# named after a zzsbx- slug and removed in the finally block; nothing else on
-# the daemon is inspected, stopped or deleted.
+# The real thing: a real image and a real container, checked against the
+# mount contract §2 asserts on the argv. Everything created is named after a
+# zzsbx- slug and removed in the finally block; nothing else on the daemon is
+# inspected, stopped or deleted.
 def dk(*args, timeout=300):
     # utf-8, not the console codepage: an org chart carries box-drawing
     # characters and cp1252 raised inside subprocess's reader thread
@@ -2031,22 +1793,20 @@ def dk(*args, timeout=300):
 
 
 if section("§9  real Docker") and not DOCKER_TIER:
-    skip("§9 needs --docker (it builds an image, formats an ext4 disk and "
-         "runs a container; minutes, not seconds)")
+    skip("§9 needs --docker (it builds an image and runs a container; "
+         "minutes, not seconds)")
 elif DOCKER_TIER:
     if shutil.which("docker") is None:
         skip("§9: no docker CLI on PATH")
     elif dk("version", "--format", "{{.Server.Version}}", timeout=60
             ).returncode != 0:
-        skip("§9: the Docker daemon is not running (start Docker Desktop) — "
+        skip("§9: the Docker daemon is not running — "
              "every check below is skipped, the hermetic tiers are unaffected")
     else:
-        # the hermetic tiers stubbed `_docker`, `_run`, MOUNT_ROOT and the
-        # distro cache — reload puts the real ones back IN PLACE, so every
-        # other module's reference to these two follows
+        # the hermetic tiers stubbed `_docker` — reload puts the real one
+        # back IN PLACE, so every other module's reference follows
         import importlib
         importlib.reload(sandbox)
-        importlib.reload(dsk)
         print("       … building the sandbox image (first run: minutes)")
         TAG9 = sandbox.ensure_image()
 
@@ -2054,6 +1814,71 @@ elif DOCKER_TIER:
         def _():
             assert dk("image", "inspect", TAG9).returncode == 0
             assert supervisor.cli_version() in TAG9 or TAG9 == sandbox.IMAGE
+
+        O9 = mkorg("real1", secret="99" * 16)
+        S9 = O9.d["slug"]
+        try:
+            NAME9 = sandbox.ensure_container(O9)
+            ins = dk("container", "inspect", "-f",
+                     "{{json .Mounts}}|{{.HostConfig.ReadonlyRootfs}}|"
+                     '{{index .Config.Labels "orgtree.layout"}}', NAME9)
+            MOUNTS9, RO9, LAYOUT9 = ins.stdout.strip().split("|")
+            BY_DST9 = {m["Destination"]: m for m in json.loads(MOUNTS9)}
+
+            @t("the real container runs with a read-only rootfs and the layout label")
+            def _():
+                assert RO9 == "true", RO9
+                assert LAYOUT9 == sandbox.LAYOUT, LAYOUT9
+
+            @t("system dirs are the org's named volumes in the real container")
+            def _():
+                for d in sandbox.SYS_DIRS:
+                    m = BY_DST9.get("/" + d)
+                    assert m and m["Type"] == "volume", (d, m)
+                    assert m["Name"] == sandbox.sys_volume(S9, d), m
+
+            @t("home, workspace and scratch are host binds in the real container")
+            def _():
+                want = {
+                    "/home/agent": sandbox.sandbox_home(S9),
+                    sandbox.cpath_workspace(S9): O9.d["workspace"],
+                    f"{sandbox.cpath_data()}/scratch/{S9}":
+                        store.scratch_root(S9),
+                }
+                for dst, src in want.items():
+                    m = BY_DST9.get(dst)
+                    assert m and m["Type"] == "bind", (dst, m)
+                    assert os.path.realpath(m["Source"]) == \
+                        os.path.realpath(src), (dst, m["Source"], src)
+
+            @t("the agent can write its workspace and scratch")
+            def _():
+                for d in (sandbox.cpath_workspace(S9),
+                          f"{sandbox.cpath_data()}/scratch/{S9}"):
+                    r = dk("exec", NAME9, "sh", "-c", f"touch {d}/.probe")
+                    assert r.returncode == 0, (d, r.stderr)
+
+            @t("⚑ DEFECT: host binds and the in-container agent disagree on uid")
+            def _():
+                """The image's `agent` is uid 1001; host bind sources are
+                created by the backend's uid. `/home/agent` is never chowned,
+                so the CLI cannot write its own home; `_heal_ownership`
+                chowns the data tree to 1001, so the backend then cannot
+                write workspace or scratch from the host side."""
+                home = dk("exec", NAME9, "sh", "-c", "touch /home/agent/.probe")
+                agent_uid = dk("exec", NAME9, "id", "-u").stdout.strip()
+                if home.returncode == 0 or agent_uid == str(os.getuid()):
+                    raise AssertionError("FIXED — retire this reproduction")
+                note("sandbox: the image's agent uid (1001) differs from the "
+                     "backend's host uid, so host bind mounts are writable "
+                     "from only one side — /home/agent is read-only to the "
+                     "agent, and after _heal_ownership the backend loses "
+                     "write access to workspace and scratch. Needs the image "
+                     "to build `agent` with the host uid (or an equivalent "
+                     "mapping). Reported, not fixed.")
+        finally:
+            sandbox.remove(S9)
+            drop(S9)
 
 # ==========================================================================
 if SKIPS:

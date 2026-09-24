@@ -1145,7 +1145,6 @@ def _warm_eligible(org: Any, nid: str, *, ignore_exclusion: bool = False,
     warm-process fallback semantics. Manual start uses ``ignore_exclusion``
     only to test the seat behind its own persistent stop flag.
     """
-    from . import supervisor as sup                 # noqa: PLC0415
     ok, why = (eligible(org, nid, ignore_exclusion=True)
                if ignore_exclusion else eligible(org, nid))
     if not ok:
@@ -1167,8 +1166,6 @@ def _warm_eligible(org: Any, nid: str, *, ignore_exclusion: bool = False,
         return False, "inflight"
     if (org.d.get("delivering") or {}).get(nid):
         return False, "delivery-in-progress"
-    if org.d.get("storage_blocked") and sup.sbx.on_disk(org.d["slug"]):
-        return False, "storage-blocked"
     return True, ""
 
 

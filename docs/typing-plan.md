@@ -41,7 +41,7 @@ scope; check items off as they land.
       tree payload, chat, inbox, org list. The API seam is where silent shape
       drift between backend and frontend actually bites.
 - [x] `src/api.js` → `src/api.ts` with typed request/response signatures.
-- [x] Convert leaf files: `forms`, `icons`, `picker`, `main`, `DiskBrowser`.
+- [x] Convert leaf files: `forms`, `icons`, `picker`, `main`.
 - [x] Convert `App.jsx` (runtime equivalence proven by esbuild-stripped diff).
 - [x] Convert `Canvas.jsx` LAST (converted in place, NOT split — the user's
       strict-conversion directive superseded the split-as-it-converts idea;

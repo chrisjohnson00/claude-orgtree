@@ -3577,38 +3577,6 @@
       ],
       "additionalProperties": false
     },
-    "LifecycleDiskMigrated": {
-      "type": "object",
-      "properties": {
-        "v": {
-          "const": 1
-        },
-        "variant": {
-          "const": "lifecycle.disk_migrated"
-        },
-        "actor": {
-          "$ref": "#/$defs/Actor"
-        },
-        "engine_authored": {
-          "type": "boolean"
-        },
-        "object": {
-          "$ref": "#/$defs/OrgRef"
-        },
-        "floored_from": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "v",
-        "variant",
-        "actor",
-        "engine_authored",
-        "object",
-        "floored_from"
-      ],
-      "additionalProperties": false
-    },
     "PolicyFableFlagged": {
       "type": "object",
       "properties": {
@@ -4526,7 +4494,6 @@
         },
         "scope": {
           "enum": [
-            "disk",
             "storage"
           ]
         }
@@ -5377,9 +5344,6 @@
         },
         {
           "$ref": "#/$defs/LifecycleRenamed"
-        },
-        {
-          "$ref": "#/$defs/LifecycleDiskMigrated"
         },
         {
           "$ref": "#/$defs/PolicyFableFlagged"
@@ -8728,38 +8692,6 @@
       ],
       "additionalProperties": false
     },
-    "PublicLifecycleDiskMigrated": {
-      "type": "object",
-      "properties": {
-        "v": {
-          "const": 1
-        },
-        "variant": {
-          "const": "lifecycle.disk_migrated"
-        },
-        "projection": {
-          "const": "public"
-        },
-        "actor": {
-          "$ref": "#/$defs/PublicActor"
-        },
-        "object": {
-          "$ref": "#/$defs/PublicOrgRef"
-        },
-        "floored_from": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "v",
-        "variant",
-        "projection",
-        "actor",
-        "object",
-        "floored_from"
-      ],
-      "additionalProperties": false
-    },
     "PublicPolicyFableFlagged": {
       "type": "object",
       "properties": {
@@ -9666,7 +9598,6 @@
         },
         "scope": {
           "enum": [
-            "disk",
             "storage"
           ]
         }
@@ -10403,9 +10334,6 @@
         },
         {
           "$ref": "#/$defs/PublicLifecycleRenamed"
-        },
-        {
-          "$ref": "#/$defs/PublicLifecycleDiskMigrated"
         },
         {
           "$ref": "#/$defs/PublicPolicyFableFlagged"

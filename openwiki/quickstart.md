@@ -85,8 +85,8 @@ a synthesis and map layer over the extensive existing docs in
   [Backend architecture](architecture/backend.md); deferred as a standalone
   deep-dive because it is a large, fast-moving subsystem best read directly
   from its docs when a change actually touches it.
-- **Sandbox/disk isolation and frozen-deployment attestation**
-  (`backend/orgtree/sandbox.py`, `disk.py`, `frozen_install.py`,
+- **Sandbox isolation and frozen-deployment attestation**
+  (`backend/orgtree/sandbox.py`, `frozen_install.py`,
   `frozen_gateway.py`, `docs/frozen-deployment.md`) — kiosk/operator security
   boundary. Summarized at overview level in
   [Deployment and configuration](operations/deployment-and-config.md);
