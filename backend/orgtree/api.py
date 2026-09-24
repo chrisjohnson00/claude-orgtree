@@ -70,6 +70,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
+from starlette.convertors import Convertor, register_url_convertor
 
 from . import crashreports
 from . import events
@@ -9521,7 +9522,21 @@ if os.path.isdir(FRONTEND_DIST):
     app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")),
               name="assets")
 
-    @app.get("/{path:path}")
+    class _SpaPathConvertor(Convertor):
+        # excludes any "api" first segment, so an unmatched /api/* request 404s
+        # (and is logged `<unmatched>`, see AccessRecord) instead of silently
+        # getting served the SPA shell as a 200.
+        regex = r"(?!api(?:/|$)).*"
+
+        def convert(self, value: str) -> str:
+            return str(value)
+
+        def to_string(self, value: str) -> str:
+            return str(value)
+
+    register_url_convertor("spa", _SpaPathConvertor())
+
+    @app.get("/{path:spa}")
     def spa(path: str) -> FileResponse:
         full = os.path.normpath(os.path.join(FRONTEND_DIST, path))
         if path and full.startswith(FRONTEND_DIST + os.sep) \
