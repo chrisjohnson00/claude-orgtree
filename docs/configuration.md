@@ -35,7 +35,6 @@ Set before the backend starts. Not visible in the UI, not per-org. A change requ
 
 | variable | default | what it does |
 |---|---|---|
-| `ORGTREE_DEPLOYMENT_PROFILE` | `standard` | install-wide security policy: blank/unset/`standard` preserves ordinary behavior; `frozen` selects the [frozen deployment profile](frozen-deployment.md); surrounding whitespace and case are ignored; any other value raises `DeploymentConfigError` (`deployment.py:current_policy`) |
 | `ORGTREE_DATA` | `~/orgtree` | the data root: org docs, workspaces, scratch, sandboxes (`store.py:26`) |
 | `ORGTREE_USER_CHARTERS` | `<data root>/user/charters` | a user-space directory of charter preset `.md` files, served by `GET /api/charters` alongside the repo's own `docs/charters/` (`api.py:_user_charters_dir`) — lets you add hire-form presets without editing the repo clone; a same-filename user preset replaces the repo preset |
 | `ORGTREE_STORE` | `sqlite` | storage backend: `sqlite` (canonical default) or `json` (deprecated historical format; retained as migration on-ramp and rollback route) (`store.py:111`) |

@@ -21,13 +21,12 @@ import urllib.request
 from typing import Any, cast
 
 if __package__:
-    from . import deployment, opreceipts
+    from . import opreceipts
 else:
     # Sandboxed Claude runs this dependency-free server by its mounted file
-    # path rather than with ``-m``. Preserve that supported entry point while
-    # sharing the one authoritative policy parser.
+    # path rather than with ``-m``.
     sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-    from orgtree import deployment, opreceipts
+    from orgtree import opreceipts
 
 ORG: str = os.environ.get("ORGTREE_ORG", "")
 NODE: str = os.environ.get("ORGTREE_NODE", "")
@@ -1617,19 +1616,9 @@ TOOLS: list[dict[str, Any]] = [
     },
 ]
 
-_AGENT_RESTART_TOOLS = frozenset({
-    "orgtree_self_restart", "orgtree_prime_restart",
-})
-
-
 def available_tools() -> list[dict[str, Any]]:
-    """The tool catalogue permitted by the install-wide deployment policy."""
-
-    if deployment.current_policy().allow_agent_restart:
-        return TOOLS
-    return [
-        tool for tool in TOOLS
-        if str(tool.get("name") or "") not in _AGENT_RESTART_TOOLS]
+    """The tool catalogue served to the CLI."""
+    return TOOLS
 
 
 def _lost_kind(exc: Exception) -> str:

@@ -521,13 +521,7 @@ def sec_selectors() -> None:
                    encoding="utf-8").read()
         code = "\n".join(ln for ln in src.splitlines()
                          if not ln.lstrip().startswith("#"))
-        # Precedence expression is encapsulated in _configured_container_auth
-        # (factored out of container_auth so deployment policy validation can
-        # wrap the resolved key without duplication).
-        fn_header = ("def _configured_container_auth("
-                     if "def _configured_container_auth(" in code
-                     else "def container_auth(")
-        i = code.index(fn_header)
+        i = code.index("def container_auth(")
         j = code.index(chr(10) + "def ", i + 1)
         body = code[i:j].split('"""')[-1]
         assert body.index("org.d.get(\"api_key\")") \
@@ -535,21 +529,18 @@ def sec_selectors() -> None:
             < body.index("ORGTREE_SANDBOX_API_KEY"), body
         assert "proxied" in body, "the proxied fallback is gone"
 
-        # container_auth uses the shared resolver
-        assert "_configured_container_auth(" in code[code.index("def container_auth("):], (
-            "container_auth does not resolve its auth through _configured_container_auth")
         # ensure_container delegates to container_auth
         assert "container_auth(" in code[code.index("def ensure_container("):], (
             "ensure_container no longer resolves its auth through the shared "
             "helper")
 
-        # Exactly THREE readers of the escape hatch exist in sandbox.py:
-        # the precedence resolver (_configured_container_auth), plus the two
-        # security checks (uses_subscription_auth and _legacy_selector_present).
-        # Any further reader is how the sandbox and billing lane come to disagree.
-        assert code.count('os.environ.get("ORGTREE_SANDBOX_API_KEY")') == 3, (
+        # Exactly TWO readers of the escape hatch exist in sandbox.py: the
+        # precedence resolver (container_auth) and the uses_subscription_auth
+        # security check. Any further reader is how the sandbox and billing
+        # lane come to disagree.
+        assert code.count('os.environ.get("ORGTREE_SANDBOX_API_KEY")') == 2, (
             "the key precedence gained another copy — one resolver "
-            "plus the subscription-auth and legacy-selector security checks")
+            "plus the subscription-auth security check")
     check("the sandbox key precedence is org → kiosk → env → proxied",
           _sandbox_precedence)
 

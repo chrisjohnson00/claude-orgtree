@@ -22,8 +22,6 @@ Markdown file in this repository as current operating guidance.
   [`cache-hazards.md`](cache-hazards.md) records invalidation traps.
 - [`infrastructure-tiers.md`](infrastructure-tiers.md) compares deployment
   shapes and their operational trade-offs.
-- [`frozen-deployment.md`](frozen-deployment.md) covers the hardened, operator-
-  controlled deployment profile and its verification boundary.
 - [`autostart.md`](autostart.md) covers Windows service startup; the
   [mail-server specification](mailserver-spec.md) and
   [hub README](../hub/README.md) cover cross-organization mail.

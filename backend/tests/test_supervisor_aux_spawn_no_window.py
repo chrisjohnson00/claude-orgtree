@@ -111,7 +111,6 @@ def immediate_command_flags() -> None:
     org = _Org()
     seen: list[dict[str, object]] = []
     with patch.object(supervisor.store, "load_org", return_value=org), \
-            patch.object(supervisor, "_deployment_org_gate"), \
             patch.object(supervisor, "claude_model_for", return_value="opus"), \
             patch.object(supervisor, "_transcript_root", return_value="W:/tx"), \
             patch.object(supervisor, "transcript_path", return_value="present.jsonl"), \

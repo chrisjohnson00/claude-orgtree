@@ -125,24 +125,6 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: the operator's live deployment. Nothing here may go near it.
 FORBIDDEN_PORTS = ("7360",)
 
-#: THE ONE OPT-OUT from the forbidden-port rule, and deliberately awkward.
-#: The rule above greps SOURCE TEXT, so it cannot tell a socket bind from a
-#: dict literal — and two suites (`frozen-install`,
-#: `frozen-attestation-integration`) legitimately name the admin port as DATA:
-#: their fixtures assert what a frozen deployment's listener table must be, so
-#: the real number IS the thing under test and cannot be swapped for a fake
-#: one. Both were proven never to call `uvicorn.run`, `.serve()`, `socket()`
-#: or `bind()` (2026-09-03), and both had been silently dark in BOTH tiers.
-#:
-#: ⚠ THE OPT-OUT NEVER HIDES ANYTHING. A suite that declares it still
-#: prints in the plan, with its stated reason. The failure being guarded
-#: against is not "a suite ran" — it is "a suite stopped running and nobody
-#: noticed" — so the loud thing must be the opt-out, not the skip.
-#: Declaring it costs a sentence, which is the point: the author states WHY
-#: the port is data, and a reader can check the claim.
-PORT_LITERAL_IS_DATA = re.compile(
-    r"^ORGTREE_PORT_LITERAL_IS_DATA\s*=\s*[\"'](.+?)[\"']", re.M)
-
 #: Measured exceptions, not a suite list. `fast` is the argv for the fast tier;
 #: None means "full tier only", and `why` is printed wherever it is skipped.
 #: Re-measure and edit rather than deleting — the number is the justification.
@@ -220,8 +202,7 @@ _TOTAL_LINE = re.compile(r"ALL\s+[\d,]+\s+CHECKS PASS|checks passed|^ℹ\s*pass\
 
 class Suite:
     def __init__(self, sid, cmd_fast, cmd_full, cwd, *, exclusive=False,
-                 guard=False, guard_hint="", fast_why="", skip="",
-                 port_data=""):
+                 guard=False, guard_hint="", fast_why="", skip=""):
         self.id = sid
         self.cmd_fast = cmd_fast          # argv, or None = full tier only
         self.cmd_full = cmd_full
@@ -231,7 +212,6 @@ class Suite:
         self.guard_hint = guard_hint
         self.fast_why = fast_why
         self.skip = skip                  # non-empty = never run, with reason
-        self.port_data = port_data        # non-empty = opted out of the port rule
 
     def cmd(self, full):
         return self.cmd_full if full else self.cmd_fast
@@ -308,14 +288,9 @@ def discover(py):
         # touch it, and quote the offending line so a false positive is
         # obvious rather than a silently missing suite.
         skip = ""
-        port_data = ""
-        declared = PORT_LITERAL_IS_DATA.search(src)
         for bad in FORBIDDEN_PORTS:
             hit = re.search(r"^.*[=(,:]\s*[\"']?" + bad + r"\b.*$", src, re.M)
-            if hit and declared:
-                # runs, and SAYS SO in the plan — see PORT_LITERAL_IS_DATA
-                port_data = declared.group(1).strip()[:70]
-            elif hit:
+            if hit:
                 skip = (f"uses the live deployment's port :{bad} — refusing to "
                         f"start it  ⟨{hit.group(0).strip()[:60]}⟩")
 
@@ -335,7 +310,6 @@ def discover(py):
                         if _GUARDISH.search(blob) else ""),
             fast_why=why,
             skip=skip,
-            port_data=port_data,
         ))
 
     # ------------------------------------------------------------- frontend
@@ -684,8 +658,7 @@ def main():
         lane = "exclusive" if s.exclusive else "parallel "
         extra = " ".join(s.cmd(args.full)[2:]) or "—"
         print(f"  {lane}  {s.id:<24} {extra:<12}"
-              f"{'  ⚑ drift guard' if s.guard else ''}"
-              f"{'  ⚠ port literal declared DATA: ' + s.port_data if s.port_data else ''}")
+              f"{'  ⚑ drift guard' if s.guard else ''}")
     for s, why in skipped:
         print(f"  skipped    {s.id:<24} {why}")
     if args.list:
