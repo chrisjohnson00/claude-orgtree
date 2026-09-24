@@ -2346,10 +2346,10 @@ export function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => v
         <input type="number" min="0" step="1" style={{ width: '8em' }}
           value={d.default_top_grant ?? 50}
           onChange={(e) => set('default_top_grant', +e.target.value)} />
-        <div className="field-label">compaction threshold % (50–95)</div>
-        <input type="number" min="50" max="95" step="1" style={{ width: '8em' }}
-          value={Math.round((d.compact_at ?? 0.8) * 100)}
-          onChange={(e) => set('compact_at', (+e.target.value || 80) / 100)} />
+        <div className="field-label">compaction threshold % (20–95)</div>
+        <input type="number" min="20" max="95" step="1" style={{ width: '8em' }}
+          value={Math.round((d.compact_at ?? 0.5) * 100)}
+          onChange={(e) => set('compact_at', (+e.target.value || 50) / 100)} />
         <div className="field-label">default thinking effort (agents without
           their own setting inherit this, live)</div>
         <select value={d.default_effort ?? ''}
@@ -2429,7 +2429,7 @@ export function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => v
             saveDefaults({
               max_top_grant: d.max_top_grant,
               default_top_grant: d.default_top_grant,
-              compact_at: Math.round((d.compact_at ?? 0.8) * 100),
+              compact_at: Math.round((d.compact_at ?? 0.5) * 100),
               fable_limit_policy: d.fable_limit_policy,
               fable_filter_policy: d.fable_filter_policy,
               fable_filter_model: d.fable_filter_policy === 'auto-autopsy'
@@ -2623,7 +2623,7 @@ export function SettingsPanel({ tree, toast, close }: {
   const defTop = val<number | string>('defTop', tree.default_top_grant ?? 50)
   const setDefTop = set('defTop', defTop)
   const compactAt = val<number | string>('compactAt',
-    Math.round((tree.compact_at ?? 0.8) * 100))
+    Math.round((tree.compact_at ?? 0.5) * 100))
   const setCompactAt = set('compactAt', compactAt)
   const fablePolicy = val('fablePolicy', tree.fable_limit_policy ?? 'halt')
   const setFablePolicy = set('fablePolicy', fablePolicy)
@@ -2736,8 +2736,8 @@ export function SettingsPanel({ tree, toast, close }: {
         </SetGroup>
         <SetGroup title="Agent defaults">
           <SetRow label="compaction threshold"
-            hint="50–95%. Splits the agent when its context passes this.">
-            <input type="number" min="50" max="95" step="1" value={compactAt}
+            hint="20–95%. Splits the agent when its context passes this.">
+            <input type="number" min="20" max="95" step="1" value={compactAt}
               aria-label="compaction threshold percent"
               onChange={(e) => setCompactAt(e.target.value)} />
             <span className="dim">%</span>

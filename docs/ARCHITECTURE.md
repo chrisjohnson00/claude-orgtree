@@ -514,8 +514,8 @@ ledger, supervisor, the gateways, or the canvas.
 - **Desk and draft interiors use the inverted-scale regime** — authored at a
   virtual size and counter-scaled into the 124 px card, so authored px ≈
   screen px only at the intended zoom.
-- **The API `Settings` body takes `compact_at` as a PERCENT (50–95) but the
-  org doc stores a FRACTION** (0.50–0.95); `defaults.json` holds
+- **The API `Settings` body takes `compact_at` as a PERCENT (20–95) but the
+  org doc stores a FRACTION** (0.20–0.95); `defaults.json` holds
   org-doc-shaped values, not request-shaped ones.
 - **`CreditBar`'s `max ?? Infinity`** means `max=undefined` is legal and
   means unbounded; `maxGhost` renders only when finite.

@@ -426,10 +426,10 @@ one glides the camera there — the same move as clicking its card. Dimmed
 chips are non-live reports.
 
 - Header (ONE row): tier, name (hover for its purpose), context wheel
-  (red ≥ 80% — compaction approaches; **in the zoomed view the wheel is a
-  button: click it to compact NOW**, after a confirm — same split as the
-  automatic one; zoomed-out wheels are passive indicators), status chip,
-  working indicator (✳),
+  (red at or above the compaction threshold — compaction approaches;
+  **in the zoomed view the wheel is a button: click it to compact NOW**,
+  after a confirm — same split as the automatic one; zoomed-out wheels are
+  passive indicators), status chip, working indicator (✳),
   badges, cost, the retire/dissolve/rehire action, and the tabs. While the
   agent is responding, the composer's send button becomes a red ■ STOP
   (Claude Code idiom) that interrupts the current response — Enter still
@@ -672,10 +672,9 @@ itself; the panel's single **save** commits everything.
 - **default top-level grant** (50 unless changed): pre-fills the draft bar of
   every new top-level hire — on top of its seat cost; drag to adjust before
   confirming.
-- **compaction threshold** (80% default, configurable 50–95): when an
-  agent's context passes this fraction of its window it compaction-splits
-  (successor continues, predecessor archives as a knowledge bearer). The
-  95% ceiling is hard — it is not configurable.
+- **compaction threshold** (50% default, configurable 20–95): when an agent's context passes this fraction of its
+  window it compaction-splits (successor continues, predecessor archives as a knowledge bearer). The 95% ceiling is
+  hard — it is not configurable.
 - **fable weekly-limit policy** and the **fable content-filter policy**
   (a filter-flagged message either halts the turn — default — or converts
   the agent to opus and retries it) — what happens when the shared Fable quota

@@ -619,7 +619,7 @@ class Org:
         self.d.setdefault("cascade_hire", True)
         self.d.setdefault("cascade_alloc", True)
         self.d.setdefault("credit_requests", [])     # top-level asks to the user
-        self.d.setdefault("compact_at", 0.80)        # compaction ratio, ≤ 0.95 hard
+        self.d.setdefault("compact_at", 0.50)        # compaction ratio, ≤ 0.95 hard
         # kiosk v2 (user vision): per-org public exposure via a preauthenticated
         # secret-URL token; caps live here, not in env vars. None = never a kiosk.
         self.d.setdefault("kiosk", None)             # {enabled, token, credits,
@@ -1047,7 +1047,7 @@ class Org:
             "max_top_grant": 1000,                # UI slider cap for user-level hires
             "default_top_grant": 50,              # pre-filled grant for top-level hires
             "credit_requests": [],                # §: top-level asks to the user
-            "compact_at": 0.80,                   # compaction ratio (≤ 0.95 hard cap)
+            "compact_at": 0.50,                   # compaction ratio (≤ 0.95 hard cap)
             "fable_limit_policy": "halt",         # halt | opus | dissolve (user ruling)
             "fable_filter_policy": "halt",        # halt | opus | auto-autopsy — filter flags (user spec)
             "fable_filter_model": "opus",         # model tier when policy == auto-autopsy
@@ -9443,7 +9443,7 @@ class Org:
             "dirs": self.d["dirs"],
             "max_top_grant": self.d.get("max_top_grant", 1000),
             "default_top_grant": self.d.get("default_top_grant", 50),
-            "compact_at": self.d.get("compact_at", 0.80),
+            "compact_at": self.d.get("compact_at", 0.50),
             "default_tools": self.d.get("default_tools"),
             "default_visibility": self.d.get("default_visibility", "full"),
             # the mode NEW hires are born with — editable post-creation
