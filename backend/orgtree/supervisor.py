@@ -21027,18 +21027,34 @@ def _storage_ev(org: Org, level: str, scope: str, used_mb: float,
                        scope=scope)
 
 
+def _clear_sandbox_storage_flags(slug: str) -> None:
+    """Docs written under the retired per-org disk can still carry these
+    flags; nothing else clears them for a sandboxed org, and a stuck
+    `storage_blocked` refuses uploads and outbox copies forever."""
+    flags = ("storage_blocked", "storage_warned", "storage_full")
+    with store.DOC_LOCK:
+        org = store.load_org(slug)
+        d = cast("dict[str, Any]", org.d)
+        if not any(k in d for k in flags):
+            return
+        for k in flags:
+            d.pop(k, None)
+        store.save_org(org)
+
+
 def storage_check(slug: str) -> str | None:
     """Storage enforcement for unsandboxed kiosks with a storage limit: the
     tiers below warn near the limit and set `storage_blocked` over it, which
-    the turn gates honour (D-031: an unsandboxed kiosk bounds configuration
-    and money, not capability — checked between turns). Sandboxed orgs have
-    no storage cap and enforce nothing here."""
+    pauses uploads and outbox copies (D-031: an unsandboxed kiosk bounds
+    configuration and money, not capability — checked between turns).
+    Sandboxed orgs have no storage cap and enforce nothing here."""
     # №22: the full workspace walk runs OUTSIDE the doc lock — it reads the
     # filesystem, not the doc, and holding DOC_LOCK across a multi-GB walk
     # starved the whole turn machinery (and timed out MCP calls into
     # duplicate-mail retries)
     org = store.load_org(slug)
     if sbx.is_sandboxed(org):
+        _clear_sandbox_storage_flags(slug)
         return None
     used = workspace_usage_bytes(org)
     nudge: list[str] = []      # live nodes to steer mid-turn after the lock

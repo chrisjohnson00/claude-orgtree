@@ -1049,6 +1049,25 @@ if section("§5  storage enforcement is off for sandboxed orgs"):
         assert not d.get("storage_blocked") and not d.get("storage_warned"), d
         drop(slug)
 
+    @t("storage_check clears storage flags a sandboxed org doc still carries")
+    def _():
+        """Docs written under the retired per-org disk can hold these flags,
+        and nothing else clears them for a sandboxed org — a stuck
+        `storage_blocked` refuses uploads and outbox copies forever."""
+        o = mkorg("cap2", kiosk=True, secret="5f" * 16)
+        slug = o.d["slug"]
+        with store.DOC_LOCK:
+            o2 = store.load_org(slug)
+            o2.d["storage_blocked"] = True
+            o2.d["storage_warned"] = True
+            o2.d["storage_full"] = True
+            store.save_org(o2)
+        assert supervisor.storage_check(slug) is None
+        d = store.load_org(slug).d
+        for flag in ("storage_blocked", "storage_warned", "storage_full"):
+            assert flag not in d, (flag, d)
+        drop(slug)
+
     @t("☞ no turn gate pairs storage_blocked with a sandbox check")
     def _():
         """Sandboxed orgs never get `storage_blocked`, so a gate keyed on
