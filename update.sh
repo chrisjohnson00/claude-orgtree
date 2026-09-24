@@ -54,8 +54,8 @@ ROOT=$(cd -- "$(dirname -- "$0")" && pwd)
 cd "$ROOT" || die "cannot cd to $ROOT"
 
 # ⚠ AM I ACTUALLY STANDING IN THE ORGTREE CHECKOUT? (ps-guards audit
-# 2026-08-27.) ROOT comes from the script's own location
-# and nothing checked it landed anywhere real. This script pulls, kills
+# 2026-08-27.) ROOT comes from the script's own location and nothing checked
+# it landed anywhere real. This script pulls, kills
 # whatever holds a port, rebuilds and restarts; pointed at the wrong directory
 # it does all of that to the WRONG tree, and the first complaint would arrive
 # much later phrased as a git or pip problem rather than as a root problem.
@@ -154,9 +154,8 @@ echo "== orgtree update (currently $BEFORE) =="
 # reason. --ff-only refuses on some dirt and sails past the rest; an operator
 # reading the log must be able to see which.
 # ⚠ AN UNREADABLE TREE IS NOT A CLEAN TREE (ps-guards audit 2026-08-27).
-# `git status --porcelain` returns
-# an EMPTY string two ways -- the tree is clean, or git could not read it at
-# all -- and the guard below tests only for emptiness. There is no `set -e`
+# `git status --porcelain` returns an EMPTY string two ways -- the tree is
+# clean, or git could not read it at all -- and the guard below tests only for emptiness. There is no `set -e`
 # here (only `set -u`), so a failing git left DIRTY empty, the guard did not
 # fire, nothing was printed, and the deploy walked straight past it. Refuse.
 DIRTY=$(git status --porcelain) || die "git status FAILED -- the working tree could not be read, so the dirty-tree guard cannot run and would pass on the empty result. An unreadable tree is not a clean tree. Nothing was rebuilt and nothing was restarted."
@@ -474,10 +473,10 @@ if [ "$DO_CUTOVER" = 1 ]; then
       # ⚠ THE INSTALL COMES UP ANYWAY, AND THAT IS THE POINT OF THIS FILE.
       # A failed export means there is no validated export to roll back to
       # WHATEVER this script does, so refusing to start would be an outage
-      # with nothing bought by it (coordinator ruling 2026-09-04). But it leaves the install in a state
-      # nobody chose and nobody was told about, and the moment that state
-      # matters is the moment somebody needs to roll back -- the worst
-      # possible moment to find out. So it is said three times: in the log,
+      # with nothing bought by it (coordinator ruling 2026-09-04). But it
+      # leaves the install in a state nobody chose and nobody was told about,
+      # and the moment that state matters is the moment somebody needs to roll
+      # back -- the worst possible moment to find out. So it is said three times: in the log,
       # on the console, and in the DATA ROOT, which is the only one of the
       # three still there next week.
       cat > "$NO_ROLLBACK" <<MARKER
@@ -693,8 +692,8 @@ cdx_version() {
 CDX_HAVE=$(cdx_version)
 # THE DECISION IS NOT MADE HERE. `codexpin.decide` owns it so the rule is
 # reachable by the test suite instead of only by running a deploy.
-# LINE-SEPARATED rather than JSON, because sh has no JSON parser and a sed-based one would break on the first reason string
-# containing a quote. `reason` is LAST so it may contain anything at all.
+# LINE-SEPARATED rather than JSON, because sh has no JSON parser and a
+# sed-based one would break on the first reason string containing a quote. `reason` is LAST so it may contain anything at all.
 CDX_OUT=$("$PY" -c 'import sys; sys.path.insert(0, sys.argv[1]); from orgtree import codexpin; h=sys.argv[2]; d=codexpin.decide(h if h else None); print(d["action"]); print(codexpin.PIN); print(codexpin.PACKAGE); print(d["reason"])' "$ROOT/backend" "${CDX_HAVE:-}" 2>/dev/null)
 CDX_ACT=$(printf '%s\n' "$CDX_OUT" | sed -n '1p')
 CDX_WANT=$(printf '%s\n' "$CDX_OUT" | sed -n '2p')

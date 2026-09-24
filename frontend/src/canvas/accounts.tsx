@@ -750,8 +750,7 @@ export function AccountsPanel({ toast, close }: {
                 </div>
                 {/* ⚠ DRIFT SITS BESIDE THE TIERS IT SUPPRESSES. Nothing in
                     this repo refreshes the pin — `update.sh` has no codex
-                    step — and
-                    OpenAI gates rollout models on the reporting CLI version,
+                    step — and OpenAI gates rollout models on the reporting CLI version,
                     so a stale CLI SHORTENS the list above with no other
                     symptom. Measured 2026-09-04: pinned 0.150.1 listed 9
                     models, 0.153.0 listed the same 9 plus `gpt-6-astra`, same

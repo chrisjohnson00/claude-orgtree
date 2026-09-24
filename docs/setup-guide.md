@@ -241,8 +241,8 @@ controls every org and can make agents run commands on the machine. It's **comma
 environment-only by design** (D-087, superseding an earlier argv-only ruling, D-39): a service
 definition can set the variable directly; nothing an agent could write — no org setting, no doc key
 — can turn it on, and `clean_env()` strips it from every agent's own environment regardless
-(`supervisor.py:406`). Both deploy scripts keep a convenience switch (`-ExposeAdmin` /
-`--expose-admin`) that just sets the variable for that one launch.
+(`supervisor.py:406`). `update.sh` keeps a convenience switch (`--expose-admin`) that just sets the
+variable for that one launch.
 
 ⚠ `README.md`'s installation section still describes the pre-D-087 argv-only model ("no setting,
 org doc, **or environment variable** can turn it on"). That's stale as of the 2026-08-04 ruling —

@@ -3,8 +3,8 @@
 whether to install it. The Codex half of what `clipin` is for Claude.
 
 WHY THIS EXISTS AT ALL (2026-09-04). Nothing in this repo ever refreshed the
-Codex pin: `update.sh` had no codex step, so `<data-root>/codex` sat at whatever version a human last
-installed by hand — 28 August, on this machine. On 4 September that cost
+Codex pin: `update.sh` had no codex step, so `<data-root>/codex` sat at
+whatever version a human last installed by hand — 28 August, on this machine. On 4 September that cost
 hours. OpenAI's ``model/list`` gates rollout models on the REPORTING CLIENT
 VERSION, so the stale pin returned 9 model ids while a newer CLI returned the
 same 9 plus ``gpt-6-astra`` — same account, same auth, same code. The tier was

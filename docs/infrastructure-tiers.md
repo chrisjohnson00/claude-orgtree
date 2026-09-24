@@ -122,9 +122,9 @@ stays on, a home server, a second laptop. Nothing needs to leave the LAN.
 **What you run.** The same hub, with its **API-only** listener enabled, and an
 address the other machines can reach:
 
-```powershell
+```bash
 cd hub
-$env:HUB_PUBLIC = "1"; docker compose up -d --build   # API-only listener, host port 7378
+HUB_PUBLIC=1 docker compose up -d --build   # API-only listener, host port 7378
 ```
 
 Peers then use `http://<this-machine's-LAN-IP>:7378` as their hub address — an
