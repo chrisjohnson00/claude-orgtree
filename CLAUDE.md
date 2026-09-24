@@ -1,3 +1,9 @@
+## Pull requests
+
+This repository is a fork. Open, view, and edit pull requests only in `chrisjohnson00/claude-orgtree`, never in the
+`Maurdekye/claude-orgtree` upstream. The `upstream` remote makes `gh` default to Maurdekye, so always pass
+`-R chrisjohnson00/claude-orgtree` to `gh pr` commands.
+
 <!-- OPENWIKI:START -->
 
 ## OpenWiki
