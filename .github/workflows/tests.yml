@@ -1,23 +1,8 @@
-# The fast tier, on every push and PR.
-#
-# WINDOWS IS THE AUTHORITATIVE JOB. orgtree is developed, deployed and lived-in
-# on Windows (README: "Developed and battle-tested on Windows"), and one suite —
-# test_persistence.py — is *about* Windows filesystem semantics: that os.replace
-# over an open destination raises WinError 5, that a FILE_SHARE_DELETE handle
-# does not rescue it, and that the writer-preferring latch built on top of those
-# facts holds under a reader storm. On Linux os.replace over an open file simply
-# succeeds, so those checks are not "failing" there, they are meaningless there.
-# `tools/run_tests.py` detects that suite by its own assertions (WinError /
-# MoveFileEx / FILE_SHARE_DELETE) and prints it as SKIP with the reason. Nothing
-# is papered over: the Linux job's summary says out loud what it did not run.
-#
-# The Linux job is kept anyway, because everything else in the tree is portable
-# and a POSIX regression should surface here rather than on the first person who
-# tries to run orgtree on a server. It is ADVISORY (continue-on-error) for one
-# honest reason: no suite in this repo has ever been observed running on Linux —
-# they were written, and every number in them measured, on Windows. Flip it to
-# blocking the first time it comes back green, and not before; an advisory job
-# nobody reads is still better than a blocking job everyone disables.
+# The fast tier, on every push and PR. This fork is Linux-only: orgtree runs
+# and is developed on Linux, and CI runs the same fast tier `tools/run_tests.py`
+# runs anywhere — `--list` shows the full plan, and the runner's own skip
+# reasons (a live rig too slow for the fast tier, and so on) are unrelated to
+# platform.
 #
 # Only the FAST tier runs in CI. The full tier includes live rigs that spawn a
 # real uvicorn, a fake Claude CLI and real elapsed time. Measured on the dev
@@ -38,20 +23,12 @@ concurrency:
 
 jobs:
   fast:
-    name: fast tier · ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: fast tier · ubuntu-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 20
-    continue-on-error: ${{ matrix.advisory }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest     # authoritative — this is where orgtree runs
-            advisory: false
-          - os: ubuntu-latest      # advisory until one green run exists
-            advisory: true
     env:
       PYTHONUTF8: '1'
+      ORGTREE_DATA: ${{ runner.temp }}/orgtree-data
 
     steps:
       - uses: actions/checkout@v4
@@ -87,7 +64,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: testlogs-${{ matrix.os }}
+          name: testlogs-ubuntu-latest
           path: testlogs/
           if-no-files-found: ignore
           retention-days: 14

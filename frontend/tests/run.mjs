@@ -15,8 +15,8 @@
 // The DOM comes from jsdom (a devDependency), installed by `harness.ts` before
 // any app module is reached — see the import-order note there.
 
-import { spawnSync } from 'node:child_process'
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { mkdirSync, readdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as esbuild from 'esbuild'
@@ -136,57 +136,33 @@ const TIMEOUT_MS = process.env.ORGTREE_TEST_TIMEOUT_MS ?? String(10_000 * REPS_N
 // behaviour, which should only ever be temporary.
 const CONCURRENCY = process.env.ORGTREE_TEST_CONCURRENCY ?? '4'
 
-// ⚠ CONTAINMENT — THE RUN AS A WHOLE IS BOUNDED IN MEMORY AND IN TIME, because
-// the two bounds above are each only half of one. The per-test timeout bounds
-// how long ONE test lives and says itself that it bounds time, not memory; the
-// concurrency cap bounds how MANY children live at once, not what one of them
-// may take. Neither stops a single child that allocates 1.5 GB/s for ten
-// seconds, and the incident this exists for (D-177) was exactly that shape:
-// the machine was at 0.44 GB free before any timeout fired. Both bounds also
-// stop at the test: a runaway in setup, in a hook, or after `--test-force-exit`
-// fails to force anything, is outside them.
+// ⚠ RUN-WIDE TIME LIMIT — THE OTHER HALF OF D-177, alongside the per-test
+// timeout and the concurrency cap above. Neither of those stops a single
+// child that allocates fast enough for long enough (the incident this exists
+// for had the machine at 0.44 GB free before any per-test timeout fired), and
+// both stop at the test: a runaway in setup, in a hook, or after
+// `--test-force-exit` fails to force anything, is outside them. This bounds
+// the whole run's wall time instead.
 //
-// So on Windows the whole `node --test` tree runs inside a kernel Job Object
-// (tests/joblimit.ps1) with a JOB-WIDE COMMIT CEILING: an allocation past it is
-// REFUSED by the kernel — the child dies with the same "Array buffer allocation
-// failed" the incident produced, in well under a second, instead of swapping
-// the host — and a WHOLE-RUN time limit that terminates every process in the
-// job, not just the parent (node's --test parent does not take its children
-// with it when killed on Windows). The ceiling covers ArrayBuffer / external
-// memory, which --max-old-space-size does not (measured, D-177).
+// It runs as a plain `setTimeout` that SIGKILLs the direct `node --test`
+// process — that process does not take its own children with it when killed,
+// so anything it spawned and left behind survives the limit. That is a real
+// gap, not a hidden one: there is nothing here that closes it (the Windows
+// Job Object that once did was removed with the rest of the Windows-only test
+// infrastructure).
 //
-// WHERE THE NUMBERS COME FROM. Ceiling 6 GB: the whole suite at concurrency 4
-// peaks at 873 MB (measured above), so this is ~7x headroom — loose enough
-// that no honest run touches it, tight enough that a runaway dies at ~4 s of
-// the incident's rate rather than at 66 GB. Run limit 5 min: the whole suite is
-// ~36 s wall, so ~8x. The RUN LIMIT scales with --reps like the per-test
-// timeout does; the ceiling does not (a stress run repeats work, it does not
-// hold more of it at once).
-// ORGTREE_TEST_JOB_MB overrides the ceiling (0 = no ceiling); ORGTREE_TEST_
-// RUN_TIMEOUT_MS overrides the run limit (0 = none). Both reach this file
-// through tools/run_tests.py too: its child_env() strips ORGTREE_* but
-// exempts ORGTREE_TEST_*. Without the job (non-Windows, or ceiling 0) the run
-// limit still applies through spawnSync's own timeout, which bounds the
-// direct child only — and that path SAYS it is uncontained, because an
-// uncontained run that looks like a contained one is the guard that reads
-// right and means nothing. A malformed override is refused, not read as 0.
-//
-// `containment.test.ts` is the positive control: it runs a planted allocator
-// under a 512 MB ceiling and asserts it DIES with the allocation error, runs
-// the same allocator under no ceiling and asserts it FINISHES, and runs a
-// sleeper with a detached child past a 2 s run limit and asserts exit 124
-// with no survivor. A guard that has never been seen to fire is not a guard
-// (team rule 2).
+// ORGTREE_TEST_RUN_TIMEOUT_MS overrides the limit (0 = none). It reaches this
+// file through tools/run_tests.py too: its child_env() strips ORGTREE_* but
+// exempts ORGTREE_TEST_*. A malformed override is refused, not read as 0.
 const envInt = (name, dflt) => {
   const raw = process.env[name]
   if (raw === undefined) return dflt
   if (!/^\d+$/.test(raw.trim())) {
-    console.error(`[run.mjs] ${name}=${JSON.stringify(raw)} is not a whole number of ${name.endsWith('_MS') ? 'milliseconds' : 'MB'}; refusing to guess`)
+    console.error(`[run.mjs] ${name}=${JSON.stringify(raw)} is not a whole number of milliseconds; refusing to guess`)
     process.exit(2)
   }
   return Number(raw.trim())
 }
-const JOB_MB = envInt('ORGTREE_TEST_JOB_MB', 6144)
 const RUN_TIMEOUT_MS = envInt('ORGTREE_TEST_RUN_TIMEOUT_MS', 300_000 * REPS_N)
 
 const files = readdirSync(out).filter((f) => f.endsWith('.mjs'))
@@ -202,37 +178,33 @@ const env = {
   ORGTREE_TEST_REPS: repsIdx > 0 ? process.argv[repsIdx + 1] : process.env.ORGTREE_TEST_REPS,
 }
 
-if (process.platform === 'win32' && JOB_MB > 0) {
-  // the argument list goes through a file, one per line: dozens of bundle
-  // paths must not pass through powershell's own quoting a second time
-  const argFile = path.join(out, 'node-args.txt')
-  writeFileSync(argFile, nodeArgs.join('\n') + '\n')
-  const ps = path.join(process.env.SystemRoot ?? 'C:\\Windows',
-    'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-  const r = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-    '-File', path.join(HERE, 'joblimit.ps1'),
-    '-LimitMB', String(JOB_MB),
-    '-TimeoutSec', String(Math.ceil(RUN_TIMEOUT_MS / 1000)),
-    '-WorkDir', path.join(HERE, '..'),
-    '-Exe', process.execPath,
-    '-ArgFile', argFile], { stdio: 'inherit', env })
-  if (r.error || r.status !== 0) {
-    if (r.error) console.error(`[run.mjs] could not start joblimit.ps1: ${r.error.message}`)
-    // a ceiling that fires can leave NO output at all (the child dies before
-    // its reporter writes), so name the bounds as candidate causes here
-    else console.error(`[run.mjs] test job exited ${r.status}. If there is no test output above, the ${JOB_MB} MB job ceiling or the ${RUN_TIMEOUT_MS} ms run limit is the likely cause (ORGTREE_TEST_JOB_MB / ORGTREE_TEST_RUN_TIMEOUT_MS; 0 disables).`)
-    process.exit(1)
-  }
+// spawn (not spawnSync) so stdout can be forwarded live AND accumulated: a
+// killed run must still show whatever ran before the kill (see run_tests.py's
+// "DID IT FINISH" note), which piping through only after exit would lose.
+const child = spawn(process.execPath, nodeArgs, { env, stdio: ['inherit', 'pipe', 'pipe'] })
+let tapOut = ''
+child.stdout.on('data', (chunk) => { process.stdout.write(chunk); tapOut += chunk })
+child.stderr.on('data', (chunk) => { process.stderr.write(chunk); tapOut += chunk })
+let timedOut = false
+const timer = RUN_TIMEOUT_MS > 0
+  ? setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, RUN_TIMEOUT_MS)
+  : null
+const status = await new Promise((resolve) => child.on('close', resolve))
+if (timer) clearTimeout(timer)
+if (timedOut) {
+  console.error(`[run.mjs] RUN LIMIT: no exit after ${RUN_TIMEOUT_MS} ms - test parent killed (any children it spawned are not covered)`)
+  process.exit(1)
+}
+if (status !== 0) process.exit(1)
+
+// node's own TAP trailer ("# pass N") carries the true count of individual
+// tests, not files.length — pulled out here because node's own total is easy
+// to miss inside 1,000+ lines of "ok" output, and the rest of this repo's
+// suites all end the same way: one line a human or tools/run_tests.py can grep.
+const m = tapOut.match(/^#\s*pass\s+(\d+)\s*$/m)
+if (m) {
+  console.log(`\nALL ${m[1]} CHECKS PASS`)
 } else {
-  console.error(`[run.mjs] containment OFF: ${process.platform !== 'win32'
-    ? `no Job Object launcher on ${process.platform}`
-    : 'ORGTREE_TEST_JOB_MB=0'}; run limit ${RUN_TIMEOUT_MS > 0 ? `${RUN_TIMEOUT_MS} ms on the direct child only` : 'none'}`)
-  const r = spawnSync(process.execPath, nodeArgs, {
-    stdio: 'inherit', env,
-    ...(RUN_TIMEOUT_MS > 0 ? { timeout: RUN_TIMEOUT_MS, killSignal: 'SIGKILL' } : {}),
-  })
-  if (r.error?.code === 'ETIMEDOUT') {
-    console.error(`[run.mjs] RUN LIMIT: no exit after ${RUN_TIMEOUT_MS} ms - test parent killed (children not covered without the job)`)
-  }
-  if (r.error || r.status !== 0) process.exit(1)
+  console.error('[run.mjs] exited 0 but no "# pass N" trailer was found in the '
+    + 'output; not printing a total rather than guessing one')
 }
