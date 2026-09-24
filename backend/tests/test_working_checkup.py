@@ -106,11 +106,11 @@ def threshold_and_internal_mail() -> None:
         assert [(s, n) for s, n, _ in calls] == [(slug, nid)], calls
         assert "automatic 20-minute" in calls[0][2].lower(), calls
         current = store.load_org(slug)
-        from orgtree.mcptool import TOOLS
-        status_card = next(t for t in TOOLS if t["name"] == "orgtree_status")
-        for instructions in (S.identity_prompt(current, nid), status_card["description"]):
-            assert "20 minutes without a real wake" in instructions
-            assert "enabled automatic checkups" in instructions
+        # orgtree_status's own card text was trimmed (b6432ee, 574df27,
+        # c73e1c3); the identity prompt is where this now has to hold.
+        instructions = S.identity_prompt(current, nid)
+        assert "20 minutes without a real wake" in instructions
+        assert "enabled automatic checkups" in instructions
         mail = (current.d.get("mail") or {}).get(nid) or []
         assert len(mail) == 1, mail
         assert mail[0]["from"] == SYSTEM and mail[0]["kind"] == "message", mail

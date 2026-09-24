@@ -132,7 +132,7 @@ class Desk:
                          if m.get("role") == "user")
         pendrow = sum((m.get("body") or "").count(probe)
                       for m in (c.get("pending_mail") or [])
-                      if m.get("from") == USER)
+                      if m.get("ev") is not None or m.get("from") == USER)
         ghost = sum(g["text"].count(probe) for g in self.pending)
         return {"transcript": transcript, "pendrow": pendrow, "ghost": ghost,
                 "total": transcript + pendrow + ghost}
@@ -335,7 +335,8 @@ _SOURCE_CONTRACTS = [
      r"serverCopies\(e\.s\.chat, text\)\s*\+\s*e\.s\.pending\.filter",
      "the ghost baseline is server copies PLUS standing ghosts of the same "
      "text; ported in Desk.send"),
-    ("frontend/src/canvas/desk.tsx", r"chat\?\.pending_mail \?\? \[\]\)\.filter\(\(m\) => m\.from === USER\)",
+    ("frontend/src/canvas/desk.tsx",
+     r"decodeEventRow\(m, BASE \? 'public' : 'operator'\)\.kind !== 'legacy' \|\| m\.from === USER",
      "the pendrow render filter is ported in Desk.renders"),
     ("frontend/src/canvas/desk.tsx", r"addPending\(slug, node\.id, t\)",
      "the composer creates a ghost before the POST"),

@@ -424,7 +424,9 @@ check("cache-only snapshots preserve observation time and stale evidence",
 
 
 def construction_sites_and_exclusions() -> None:
-    run_src = inspect.getsource(S._run_one_turn)
+    # _run_one_turn is now a thin wrapper; the pinned body lives in
+    # _run_one_turn_recorded.
+    run_src = inspect.getsource(S._run_one_turn_recorded)
     ident_src = inspect.getsource(S.identity_prompt)
     cmd_src = inspect.getsource(S._build_cmd)
     hash_src = inspect.getsource(warmpool.identity_snapshot)

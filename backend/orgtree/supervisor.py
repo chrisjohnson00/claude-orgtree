@@ -11214,7 +11214,10 @@ def _codex_git_trust_env(sc: Mapping[str, Any]) -> dict[str, str]:
         # forward slashes: what git itself prints in its own "To add an
         # exception" hint on Windows, and what was measured to work
         g = p.replace("\\", "/")
-        if g.endswith("/") and not g.endswith(":/"):
+        # "/" itself must not strip down to "": an EMPTY safe.directory value
+        # is git's own convention for "reset the list" — it would silently
+        # wipe every entry built above it (measured with a root grant).
+        if g.endswith("/") and not g.endswith(":/") and g != "/":
             g = g[:-1]
         # the descendants pattern is built separately rather than by
         # appending "/*": a DRIVE-ROOT grant ("C:\") already ends in its
@@ -12853,8 +12856,9 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             target=_steer_pump, daemon=True,
             name=f"codexsteer-{slug}-{nid}")
         steer_thread.start()
-        res_raw = turn.wait(timeout=TURN_TIMEOUT,
-                            close_client=wp_turn is None)
+        # Closing happens below, after the steer pump has actually left
+        # (join) — closing here would race its last poll for a late reply.
+        res_raw = turn.wait(timeout=TURN_TIMEOUT, close_client=False)
     finally:
         # Leg-local cleanup only; `_run_one_turn` still owns the shared queue
         # and busy-state boundary. A clean warm claimant detaches its callbacks
@@ -12967,8 +12971,11 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                     _td_discard = reason
                     warmpool.discard(wp_turn, reason)
             else:
-                # `wait` normally closed the cold client; this also covers a
-                # start/initialize exception before wait was reached.
+                # Only reached after `steer_thread.join()` above, so this can
+                # no longer race the pump's last poll for a late reply (the
+                # bug `close_client=False` on `wait()` exists to fix) — and
+                # still inside the `finally` this whole block already is, so
+                # a raise here does not skip the teardown below (D2).
                 turn.client.close()
         finally:
             # ⚠ ON EVERY EXIT: the teardown above is the same "can each raise"
@@ -20502,6 +20509,24 @@ def _remote_save_hook(slug: str) -> None:
         remote_reap(slug)
 
 
+def _terminate_and_reap(proc: subprocess.Popen) -> None:
+    """`terminate()` alone leaves a zombie until someone `wait()`s it, and
+    `os.kill(pid, 0)` still succeeds on a zombie — so a caller that only
+    checks pid liveness never notices the server is actually gone. Wait for
+    the exit, and escalate to `kill()` for a server that ignores SIGTERM."""
+    try:
+        proc.terminate()
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    except OSError:
+        pass
+
+
 def remote_reap(slug: str) -> None:
     """Kill remote-control servers whose seat no longer exists (redteam
     2026-08-05: delete/archive/rename removed the node but `_remote_procs`
@@ -20522,19 +20547,13 @@ def remote_reap(slug: str) -> None:
         if k[1] not in alive:
             proc = _remote_procs.pop(k, None)
             if proc is not None:
-                try:
-                    proc.terminate()
-                except OSError:
-                    pass
+                _terminate_and_reap(proc)
 
 
 def remote_control_stop(slug: str, nid: str) -> dict[str, Any]:
     proc = _remote_procs.pop((slug, nid), None)
     if proc is not None:
-        try:
-            proc.terminate()
-        except OSError:
-            pass
+        _terminate_and_reap(proc)
     had_mail = False
     sid_driven = None
     with store.DOC_LOCK:
@@ -23686,11 +23705,13 @@ def _note_steer_attempt(slug: str, nid: str, toks: Iterable[str],
             hit = False
             for b in (org.d.get("delivering") or {}).get(nid) or []:
                 if b.get("tok") in drop:
-                    prev = b.get("attempt") if isinstance(b.get("attempt"), dict) else {}
-                    b["attempt"] = {"via": "steer", "outcome": str(outcome),
-                                    "at": now_iso(),
-                                    "n": int(prev.get("n") or 0) + 1,
-                                    "reason": str(reason or "")[:200]}
+                    # own key: the delivery envelope's own "attempt" (int
+                    # redrain count, :6983) shares this dict and collided here
+                    prev = b.get("steer_attempt") if isinstance(b.get("steer_attempt"), dict) else {}
+                    b["steer_attempt"] = {"via": "steer", "outcome": str(outcome),
+                                           "at": now_iso(),
+                                           "n": int(prev.get("n") or 0) + 1,
+                                           "reason": str(reason or "")[:200]}
                     hit = True
             if hit:
                 store.save_org(org)
@@ -25098,6 +25119,9 @@ _WD_SHELL_ERRORS = (
     "command not found",
     "no such file or directory",
 )
+# dash (Linux's /bin/sh) skips the word "command": "/bin/sh: 1: X: not
+# found". Caught separately because it is a shape, not a fixed phrase.
+_WD_SHELL_ERROR_RE = re.compile(r"^\S*sh: \d+: .+: not found$", re.MULTILINE)
 
 
 def wd_output_broken(out: str) -> str | None:
@@ -25109,7 +25133,11 @@ def wd_output_broken(out: str) -> str | None:
     too), "is not recognized" is not. Team charter §3: prefer positive
     markers over asserted absences."""
     low = (out or "").lower()
-    return next((s for s in _WD_SHELL_ERRORS if s in low), None)
+    hit = next((s for s in _WD_SHELL_ERRORS if s in low), None)
+    if hit:
+        return hit
+    m = _WD_SHELL_ERROR_RE.search(out or "")
+    return m.group(0) if m else None
 
 
 def _wd_age_s(stamp: Any) -> float | None:
@@ -26557,8 +26585,8 @@ def reconcile(slug: str) -> list[str]:
             # so the repeat is explained on the desk instead of silent.
             unk = sum(len(b.get("mail") or []) + len(b.get("notices") or [])
                       for b in batches
-                      if isinstance(b.get("attempt"), dict)
-                      and b["attempt"].get("outcome") == "unknown")
+                      if isinstance(b.get("steer_attempt"), dict)
+                      and b["steer_attempt"].get("outcome") == "unknown")
             if unk:
                 log = org.d.setdefault("steered_log", {}).setdefault(dnid, [])
                 log.append({

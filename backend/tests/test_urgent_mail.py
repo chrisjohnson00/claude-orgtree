@@ -234,8 +234,9 @@ def main():
     # moving it), so the suite was red before orgtree_staff made it 34.
     # The claim being made here is "urgent added PARAMETERS, not a card" —
     # it is worth keeping, and it is worth being true.
-    check("the tool catalogue is 34 cards (urgent added params, not a card)",
-          lambda: (None if len(TOOLS) == 34
+    # 35 since 82fc1ce added orgtree_unstick as its own card.
+    check("the tool catalogue is 35 cards (urgent added params, not a card)",
+          lambda: (None if len(TOOLS) == 35
                    else (_ for _ in ()).throw(AssertionError(len(TOOLS)))))
 
     print(f"\n{PASS} checks passed")

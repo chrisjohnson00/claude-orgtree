@@ -70,6 +70,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
+from starlette.convertors import Convertor, register_url_convertor
 
 from . import crashreports
 from . import events
@@ -8051,8 +8052,12 @@ async def node_upload(slug: str, nid: str, request: Request,
         raise HTTPException(413, "the org is over its storage limit — uploads "
                                  "are paused until files are deleted (the "
                                  "block lifts automatically)")
+    # a browser on Windows still sends a "\"-separated name; os.path.basename
+    # only splits on "/" here (POSIX), so a bare backslash swap first keeps
+    # the upload from landing as one file named after its whole fake path
     safe = re.sub(r"[^\w .()+\-]", "_",
-                  os.path.basename(name or "upload.bin")).strip(" .") or "upload.bin"
+                  os.path.basename((name or "upload.bin").replace("\\", "/"))
+                  ).strip(" .") or "upload.bin"
     data = await request.body()
     if not data:
         raise HTTPException(422, "empty upload")
@@ -9521,7 +9526,21 @@ if os.path.isdir(FRONTEND_DIST):
     app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")),
               name="assets")
 
-    @app.get("/{path:path}")
+    class _SpaPathConvertor(Convertor):
+        # excludes any "api" first segment, so an unmatched /api/* request 404s
+        # (and is logged `<unmatched>`, see AccessRecord) instead of silently
+        # getting served the SPA shell as a 200.
+        regex = r"(?!api(?:/|$)).*"
+
+        def convert(self, value: str) -> str:
+            return str(value)
+
+        def to_string(self, value: str) -> str:
+            return str(value)
+
+    register_url_convertor("spa", _SpaPathConvertor())
+
+    @app.get("/{path:spa}")
     def spa(path: str) -> FileResponse:
         full = os.path.normpath(os.path.join(FRONTEND_DIST, path))
         if path and full.startswith(FRONTEND_DIST + os.sep) \

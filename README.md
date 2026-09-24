@@ -623,14 +623,6 @@ python tools/run_tests.py --full     # everything, including live rigs
 python tools/run_tests.py --list     # what would run, and how, without running it
 ```
 
-In PowerShell, use a fresh temporary directory instead:
-
-```powershell
-$env:ORGTREE_DATA = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
-New-Item -ItemType Directory -Path $env:ORGTREE_DATA | Out-Null
-python tools/run_tests.py
-```
-
 The runner refuses to execute without an explicit `ORGTREE_DATA` (`--list`
 is exempt). Individual storage tests must also establish their own throwaway
 root **before importing orgtree**: the store binds its data root at import
@@ -645,39 +637,24 @@ parallel frontend-test children. It defaults to `4`; lower it when the machine
 is under pressure, or set it to `0` only to restore Node's old unbounded
 parallelism. This is a test-runner setting, not a runtime orgtree setting.
 
-**Frontend test containment (Windows):** the whole `node --test` tree runs
-inside a kernel Job Object (`frontend/tests/joblimit.ps1`) with a job-wide
-commit ceiling, default 6 GB, and a whole-run time limit, default 5 minutes
-(the time limit scales with `--reps`; the ceiling does not). An allocation past the ceiling is refused by the
-kernel and the offending child dies with `Array buffer allocation failed`
-instead of swapping the machine; the time limit terminates every process in
-the job, not just the parent. `ORGTREE_TEST_JOB_MB` overrides the ceiling
-(`0` = no ceiling), `ORGTREE_TEST_RUN_TIMEOUT_MS` the run limit (`0` = none);
-both work through `tools/run_tests.py` as well as a direct `node
-tests/run.mjs` (its child environment strips `ORGTREE_*` but exempts
-`ORGTREE_TEST_*`). A value that is not a whole number is refused rather than
-read as `0`, and a run without the job says so (`[run.mjs] containment OFF`)
-so an uncontained run never looks like a contained one. If the launcher
-cannot create the job on a machine, `ORGTREE_TEST_JOB_MB=0` is the way past
-it. `frontend/tests/containment.test.ts` is the positive control: it proves
-the ceiling kills a planted allocator, that no ceiling lets it finish, and
-that the run limit terminates a sleeper AND its detached child.
+**Frontend test run limit:** `frontend/tests/run.mjs` also bounds the whole `node --test` run's wall time, default 5
+minutes (scales with `--reps`). Past that, the direct `node --test` process is killed with `SIGKILL`; any children it
+spawned and left behind are not covered by this limit. `ORGTREE_TEST_RUN_TIMEOUT_MS` overrides it (`0` = none), and
+works through `tools/run_tests.py` as well as a direct `node tests/run.mjs` (its child environment strips
+`ORGTREE_*` but exempts `ORGTREE_TEST_*`). A value that is not a whole number is refused rather than read as `0`.
 
-**The two tiers.** The fast tier runs every suite in the cheapest mode that
-suite advertises — `--hermetic` if it has one, else `--quick`, else plain — and
-touches no real listener that matters. It is what CI runs. The full tier runs
-everything at full depth, including the live rigs that spawn a real uvicorn, a
-real turn loop and a fake Claude CLI, and sweep timing configurations in real
-elapsed time. Those are minutes each, so they are a pre-release gate rather
-than a per-change one.
+**The two tiers.** The fast tier runs every suite in the cheapest mode that suite advertises — `--hermetic` if it has
+one, else `--quick`, else plain — and touches no real listener that matters. It runs on every push. The full tier runs
+everything at full depth, including the live rigs that spawn a real uvicorn, a real turn loop and a fake Claude CLI,
+and sweep timing configurations in real elapsed time. Those are minutes each, so the full tier is a nightly and
+pre-release gate rather than a per-change one. Neither tier bills a model: every provider CLI is a fake. The one
+opt-in mode that needs a paid model, `test_message_visibility_live.py --real-cli`, is run by hand only.
 
-**How suites are found.** By glob — `backend/tests/test_*.py` plus
-`frontend/tests/run.mjs`. Adding a suite requires no edit to the runner: its
-flags, whether it starts a real listener (those run one at a time, after the
-parallel pool drains, so nothing races them), whether it asserts Windows-only
-filesystem behaviour, and whether it carries a drift guard are all read out of
-the suite's own source. The one table of literals in `run_tests.py` is `SLOW`,
-which records *measured* wall times that keep a suite out of the fast tier.
+**How suites are found.** By glob — `backend/tests/test_*.py` plus `frontend/tests/run.mjs`. Adding a suite requires
+no edit to the runner: its flags, whether it starts a real listener (those run one at a time, after the parallel pool
+drains, so nothing races them), and whether it carries a drift guard are all read out of the suite's own source. The
+one table of literals in `run_tests.py` is `SLOW`, which records *measured* wall times that keep a suite out of the
+fast tier.
 
 **Drift guards.** Several suites mirror expressions that live in production
 files and check that the original still says what the mirror assumes:
@@ -692,16 +669,9 @@ of that model has quietly become fiction until the mirror is updated. The
 summary also reports guards that ran and *held*, and flags a guard that
 printed no verdict at all.
 
-**CI** (`.github/workflows/tests.yml`) runs the fast tier on every push, on
-`windows-latest` **and** `ubuntu-latest`. Windows is the authoritative job:
-orgtree runs on Windows, and `test_persistence.py` asserts Windows filesystem
-semantics directly (`os.replace` over an open destination raises WinError 5;
-`FILE_SHARE_DELETE` does not rescue it) — the writer-preferring latch exists
-*because* of them. On Linux those calls simply succeed, so the runner skips
-that suite there and prints the reason in the summary rather than pretending
-it passed. The Linux job is advisory until it has come back green once —
-nothing in this tree has ever been observed running on Linux, and a blocking
-job that has never passed is a job people turn off.
+**CI** runs on `ubuntu-latest`. `.github/workflows/tests.yml` runs the fast tier on every push and pull request; the
+job is blocking, so a failing suite fails the build. `.github/workflows/full-tests.yml` runs the full tier nightly and
+on demand (`workflow_dispatch`).
 
 The ledger (`backend/orgtree/ledger.py`) is the single source of truth for
 credits, authority, addressing, and capability subsets; the supervisor

@@ -82,11 +82,6 @@ function node(id: string, over: Partial<CanvasNode> = {}): CanvasNode {
   } as CanvasNode
 }
 
-/** the envelope the backend really writes, so §3 reads a REAL mail card */
-const envelope = (from: string, body: string) =>
-  `[MAIL — 1 message(s)]\nFROM ${from} (your peer) · message · 2026-09-05T10:00:00Z\n`
-  + `${body}\n[END MAIL]\n\n(orgtree) You have new mail above.`
-
 /** every argument every route was called with, so a check can ask about
  *  ARITY and not only about "was it called" */
 interface Calls {
@@ -127,7 +122,7 @@ async function desk(t: TestContext, opts: {
   for (const o of opts.others ?? []) map.set(o.id, o)
   if (opts.say) s.assistantMsg(opts.say)
   if (opts.live) s.liveRow('text', opts.live)
-  if (opts.mail) s.userMsg(envelope(opts.mail.from, opts.mail.body))
+  if (opts.mail) s.mailMsg(opts.mail.from, opts.mail.body, { relationship: 'your peer' })
   if (opts.cmdOut) {
     s.messages.push({ role: 'system', text: '', cmd_out: opts.cmdOut,
       seq: 900, ts: new Date(Date.now()).toISOString() } as never)
@@ -224,7 +219,7 @@ async (t: TestContext) => {
   assert.ok(q(el, '.turn-mail-head').length > 0,
     'positive control: the envelope really rendered as a mail CARD')
   const c = chip(el, '@item:org/sort-selector')
-  assert.ok(c.closest('.turn-mail-body'),
+  assert.ok(c.closest('.event-body'),
     'the chip is in the CARD BODY, not in some tail the parser left behind')
   await inAct(async () => { c.click() })
   assert.deepEqual(calls.item, [[{ slug: 'sort-selector' }]])

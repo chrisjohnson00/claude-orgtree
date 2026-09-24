@@ -971,6 +971,15 @@ test('Presented desk tab lists the selected agent documents and opens markdown',
   const server = new FakeServer()
   installFetch(server)
   const opened: string[] = []
+  // The gallery reads `GET /documents`, not the node's own bootstrap prop,
+  // once that poll has answered at all — this is the fixture that actually
+  // drives what the panel shows; `node.documents` below only covers the
+  // first paint, before the poll lands.
+  server.documents.push(
+    { id: 'doc-agent-md', node: 'agent', title: 'Agent report', at: '2026-09-05T09:00:00.000Z',
+      format: 'markdown', evicted: false, node_state: 'live' },
+    { id: 'doc-agent-html', node: 'agent', title: 'Agent preview', at: '2026-09-05T09:01:00.000Z',
+      format: 'html', evicted: false, node_state: 'live' })
   const n = node({ id: 'agent', documents: [
     { id: 'doc-agent-md', title: 'Agent report', at: '2026-09-05T09:00:00.000Z', format: 'markdown' },
     { id: 'doc-agent-html', title: 'Agent preview', at: '2026-09-05T09:01:00.000Z', format: 'html' },
@@ -1001,12 +1010,16 @@ test('Presented desk tab lists the selected agent documents and opens markdown',
   await act(async () => { markdown!.click() })
   assert.ok(markdown!.classList.contains('on'))
   assert.match(view.el.querySelector('.mailer-read')?.textContent ?? '', /Agent report/)
+  // the server's own list is authoritative — clearing only the node's
+  // bootstrap prop would leave the polled rows exactly as they were
+  server.documents.length = 0
   await view.render(
     <DeskChat node={node({ id: 'agent', documents: [] })}
       map={new Map([['agent', node({ id: 'agent', documents: [] })]])}
       op={op} slug="prog" toast={noop} pub={false} bare onJump={noop}
       onOpenDoc={(id) => { opened.push(id) }} />)
   await flush()
+  await advance(5000)   // the poll interval — the fixture's only trigger to refetch
   await act(async () => {
     const presented = [...view.el.querySelectorAll<HTMLButtonElement>('.cc-tabs button')]
       .find((b) => b.textContent === 'presented')!

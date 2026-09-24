@@ -71,20 +71,22 @@ def check(label, fn) -> None:
 
 def _env():
     """The runner's own rule, applied to the runner: no child of this suite may
-    inherit a pointer at the operator's live data directory."""
+    inherit a pointer at the operator's live data directory. It still needs
+    SOME data root of its own, though — the nested runner refuses to start
+    without one, same as any other invocation."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("ORGTREE_")}
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
+    env["ORGTREE_DATA"] = tempfile.mkdtemp(prefix="orgtree-runcomplete-data-")
     return env
 
 
 def _kill_tree(proc) -> None:
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                       capture_output=True)
-    else:
-        import signal
+    import signal
+    try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        pass                      # already gone — the kill still "landed"
     try:
         proc.wait(timeout=30)
     except subprocess.TimeoutExpired:                            # pragma: no cover
@@ -159,28 +161,31 @@ def sec_killed() -> None:
     # takes ~30 s — long enough to be caught in the act. The runner's own
     # classification is what makes a second concurrent copy safe.
     with open(outfile, "w", encoding="utf-8") as fh:
-        kw = {} if os.name == "nt" else {"start_new_session": True}
         proc = subprocess.Popen(
             [sys.executable, RUNNER, "--only", "limit-freeze",
              "--logdir", logdir],
-            cwd=REPO, env=_env(), stdout=fh, stderr=subprocess.STDOUT, **kw)
+            cwd=REPO, env=_env(), stdout=fh, stderr=subprocess.STDOUT,
+            start_new_session=True)
 
         # ⚠ PROOF THE RUN WAS RUNNING. Wait for the plan header rather than
         # sleeping a fixed amount: a fixed sleep on a loaded machine kills a
         # process that never got started, and "marker absent" would then pass
         # for the wrong reason entirely.
+        # `--only` is a SUBSTRING filter (`f in s.id`), so "limit-freeze" also
+        # matches the newer `provider-limit-freeze` suite — the plan count is
+        # not pinned to 1 for that reason.
         started, deadline = "", time.time() + 120
         while time.time() < deadline:
             if proc.poll() is not None:
                 break
             with open(outfile, encoding="utf-8", errors="replace") as rf:
                 started = rf.read()
-            if "plan · 1 to run" in started:
+            if re.search(r"plan · \d+ to run", started):
                 break
             time.sleep(0.2)
 
     check("the run had started — its plan header reached stdout",
-          lambda: _true("plan · 1 to run" in started,
+          lambda: _true(re.search(r"plan · \d+ to run", started),
                         f"never saw the plan header; stdout was:\n{started!r}"))
     check("…and it was still alive at the moment of the kill",
           lambda: _true(proc.poll() is None,
@@ -191,7 +196,7 @@ def sec_killed() -> None:
 
     check("the kill landed — the process is gone",
           lambda: _true(proc.poll() is not None,
-                        "the runner survived taskkill /T /F"))
+                        "the runner survived SIGKILL"))
 
     with open(outfile, encoding="utf-8", errors="replace") as rf:
         out = rf.read()

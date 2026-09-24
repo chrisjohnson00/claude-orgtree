@@ -631,8 +631,8 @@ def the_tool_card_offers_the_reason() -> None:
     assert "REQUIRED" in d and "CANCELLED" in d and "UNRECOVERABLY" in d, d
     assert "dropped_reason" in card["description"], \
         "the tool's own prose never names the field"
-    assert "never Done" in props["status"]["description"], \
-        "the status list does not say dropped is not a completion"
+    # "never Done" was trimmed from this card's own text (b6432ee, 574df27,
+    # c73e1c3); the claim still holds, pinned against DOCKET_DOCTRINE below.
 
 
 check("the orgtree_work card offers dropped_reason and says what it is for",

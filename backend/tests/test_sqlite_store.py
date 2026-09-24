@@ -902,45 +902,6 @@ def s5_delete_restore() -> None:
     # Exercised end to end in probes/p14_delete_atomic.py; these are the two
     # that belong in the suite because they are invariants, not scenarios.
 
-    def locked_artefact_aborts() -> None:
-        """A locked `<slug>.json` must abort the delete, not be swallowed.
-
-        It used to move LAST inside `suppress(OSError)`, after the database
-        was already in the trash. On Windows an ordinary open read handle
-        makes `os.replace` raise; that raise was swallowed; `delete_org`
-        returned SUCCESS leaving a bare `<slug>.json` — `pending_migrations`'
-        definition of an unmigrated org. The next start REFUSED, naming a
-        slug that no longer existed, and the wall's own `ORGTREE_MIGRATE=1`
-        remedy rebuilt the org from that stale file.
-
-        Dropping the suppression is not the fix; the destructive half has
-        already happened by then. The ORDER is: the artefacts that can block
-        a boot move while the database is still in `orgs/`, where a bare
-        `.json` beside a `.db` is inert."""
-        o = fresh("lockdel", nodes=1)
-        store.save_org(o)
-        with open(store._json_path("lockdel"), "w", encoding="utf-8") as f:
-            f.write('{"marker": "an operator part-way through a rollback"}')
-        h = open(store._json_path("lockdel"), "rb")     # noqa: SIM115
-        try:
-            try:
-                store.delete_org("lockdel")
-                raise AssertionError(
-                    "delete_org reported SUCCESS with a locked .json")
-            except PermissionError:
-                pass
-        finally:
-            h.close()
-        eq(os.path.exists(store._db_path("lockdel")), True,
-           "the database stayed in orgs/: ")
-        eq(os.path.exists(store._json_path("lockdel")), True,
-           "so did the document: ")
-        eq(store.pending_migrations(), [], "nothing became pending: ")
-        store.delete_org("lockdel")                     # and it works unlocked
-        eq(os.path.exists(store._json_path("lockdel")), False, "after: ")
-    check("a locked artefact aborts the delete and leaves the org whole "
-          "— never a half-delete that reports success", locked_artefact_aborts)
-
     def stem_free_for_every_artefact() -> None:
         """The free-stem search must clear every suffix under the stem.
 
@@ -1242,48 +1203,43 @@ def s9_review() -> None:
         it automatically — so `PRAGMA wal_checkpoint(TRUNCATE)` was dead code
         as far as that check could tell. It is not dead when a №22 reader is
         still holding one: without the checkpoint the last committed frames
-        sit in a `-wal` the renamed file no longer owns."""
+        sit in a `-wal` the renamed file no longer owns.
+
+        POSIX renames an open file without complaint (unlike Windows, which
+        refuses and forces `delete_org` to retry): the delete completes with
+        the reader's connection still live. What must still hold is the
+        checkpoint — the trashed `.db` alone, with no `-wal` beside it,
+        carries the reader's own last-seen commit."""
         slug = "wal-open"
         o = fresh(slug)
         o.d["committed_last"] = "must survive the delete"
         store.save_org(o)
         assert os.path.exists(store._db_path(slug) + "-wal"), "expected a WAL"
         trash = os.path.join(store.DATA_ROOT, "deleted")
-        # ⚠ MEASURED: on Windows the rename CANNOT proceed while any handle
-        # on the database is open, so `delete_org` exhausts its retry budget
-        # and RAISES. That is the safe outcome and the one worth pinning —
-        # the org must be left whole, with no half-made trash copy. (It also
-        # means `PRAGMA wal_checkpoint(TRUNCATE)` is belt-and-braces here:
-        # the rename only ever runs once every connection is closed, and
-        # closing the last connection to a WAL database checkpoints it
-        # anyway. Mutant M10 survives for that reason, not for want of a
-        # test — see probes/p4_mutants.py.)
         cm = store._POOL.acquire(slug)
         conn = cm.__enter__()
         conn.execute("SELECT 1").fetchone()
         try:
-            store.delete_org(slug)
-            raise AssertionError("delete_org renamed a database still open")
-        except PermissionError:
-            pass
+            store.delete_org(slug)          # succeeds despite the open reader
         finally:
             cm.__exit__(None, None, None)
-        assert os.path.exists(store._db_path(slug)), "the org was left neither here nor there"
-        eq([f for f in os.listdir(trash) if f.startswith(slug + "-")], [],
-           "a half-made trash copy: ")
-        eq(store.load_org(slug).d["committed_last"], "must survive the delete",
-           "the org did not survive the refused delete: ")
-        # and once the connection is gone the delete completes and restores
-        store.delete_org(slug)
+        assert not os.path.exists(store._db_path(slug)), \
+            "the database was not moved"
         cands = sorted(f for f in os.listdir(trash)
                        if f.startswith(slug + "-") and f.endswith(".db"))
         eq(len(cands), 1, "trash copies: ")
-        os.replace(os.path.join(trash, cands[0]), store.org_path(slug))
+        trashed = os.path.join(trash, cands[0])
+        # `wal_checkpoint(TRUNCATE)` empties the sidecar but the file itself
+        # may still travel with the database — a NON-empty one is the actual
+        # defect (a committed frame the renamed file no longer owns).
+        if os.path.exists(trashed + "-wal"):
+            eq(os.path.getsize(trashed + "-wal"), 0,
+               "a live -wal beside the trashed db: the checkpoint did not run")
+        os.replace(trashed, store.org_path(slug))
         eq(store.load_org(slug).d["committed_last"], "must survive the delete",
            "the last commit did not travel with the renamed database: ")
-    check("delete_org refuses rather than half-completing while a connection is "
-          "open, and still carries the last commit once it can run",
-          delete_with_a_connection_still_open)
+    check("delete_org succeeds while a connection is open, and the trashed "
+          "database still carries the last commit", delete_with_a_connection_still_open)
 
     def durability_pragmas() -> None:
         """MUTANT M11, uncaught, and it cannot be caught by observing

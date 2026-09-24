@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -209,6 +210,11 @@ CODEX_TOOL_QUEUE: Final = 16
 #: before returning without them. NOT proof they stopped: whatever finishes
 #: later still reaches the owning turn through its `on_late_tool_result`.
 TOOL_DRAIN_S: Final = 2.0
+#: `close()`'s bound on a voluntary exit after stdin is closed. A tool
+#: reply can be flushed to the wire and then raced by the very next line
+#: (an instant SIGKILL) — the child never gets to read what is already in
+#: the pipe. This is the beat that lets it, before the process-group kill.
+CLOSE_GRACE_S: Final = 0.5
 
 # ── audit D3: three-way steer outcome ────────────────────────────────────────
 #: the client-side ceiling on a `turn/steer` acknowledgement. Module-level
@@ -443,7 +449,11 @@ class AppServerClient:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd,
             creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                           if os.name == "nt" else 0))
+                           if os.name == "nt" else 0),
+            # own process group: `close()` kills the whole tree (app-server
+            # forks a native engine + code-mode-host child) via killpg, not
+            # just this pid — a bare kill() orphans them (2026-08-30 lock bug)
+            start_new_session=True)
         self.on_event = on_event
         self.on_exit: Callable[[], None] | None = None
         self.tool_dispatch = tool_dispatch
@@ -862,15 +872,25 @@ class AppServerClient:
         """Tear the app-server down — the WHOLE process tree, and wait for it.
 
         ⚠ `codex app-server` (the `node …/codex.js` entry orgtree spawns) forks
-        a native `codex-*-win32-x64` engine child and a `codex-code-mode-host`
-        child. A bare `self.proc.kill()` kills only the node parent; on Windows
-        the children are orphaned and KEEP THE THREAD'S `~/.codex` write lock,
-        so the NEXT turn's `thread/resume` fails with "thread … already has an
-        active writer" (measured 2026-08-30: a run of orphaned pairs from four
-        failed turns). Kill by pid through the OS so the tree goes, then
+        a native engine child and a `codex-code-mode-host` child. A bare
+        `self.proc.kill()` kills only the node parent; the children are
+        orphaned and KEEP THE THREAD'S `~/.codex` write lock, so the NEXT
+        turn's `thread/resume` fails with "thread … already has an active
+        writer" (measured 2026-08-30: a run of orphaned pairs from four failed
+        turns). `start_new_session=True` at spawn put this tree in its own
+        process group; `killpg` ends the whole group in one call, then
         `wait()` so the next turn does not spawn into a lock the dying tree
-        still holds (the same rapid-kill→spawn contention the module docstring
-        warns about).
+        still holds (the same rapid-kill→spawn contention the module
+        docstring warns about).
+
+        Closing stdin FIRST and giving the process `CLOSE_GRACE_S` to exit on
+        its own (rather than killing immediately) matters even in the normal
+        case: a tool reply can be flushed to the wire the instant the turn's
+        drain window ends, and an immediate SIGKILL can beat the child's own
+        read of it — the reply is on the wire but never gets read. A closed
+        stdin still lets an already-buffered read succeed before EOF ends the
+        child's loop; only a process that does not exit on EOF pays the
+        killpg cost.
 
         Ends the binding epoch first (D2): a worker still running finishes as
         the closed binding's — retained, handed to its sink, never sent."""
@@ -878,18 +898,26 @@ class AppServerClient:
             self._epoch += 1
             self._closed = True
             self._jobs_cv.notify_all()
-        if os.name == "nt":
-            try:
-                subprocess.run(
-                    ["taskkill", "/T", "/F", "/PID", str(self.proc.pid)],
-                    check=False, capture_output=True, timeout=10,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            except (OSError, subprocess.SubprocessError):
-                pass
         try:
-            self.proc.kill()          # POSIX, and a belt over taskkill
-        except OSError:
+            stdin = self.proc.stdin
+            if stdin is not None:
+                stdin.close()
+        except (OSError, ValueError):
             pass
+        try:
+            self.proc.wait(timeout=CLOSE_GRACE_S)
+        except subprocess.TimeoutExpired:
+            pass
+        # ALWAYS killpg, even after a voluntary exit above: that only reaps
+        # THIS pid, not a grandchild still parked in the same process group
+        # (the group start_new_session put the whole tree in at spawn).
+        # ⚠ pid 0 is never a real child — POSIX reads killpg(0, …) as "MY OWN
+        # group", so a test double stubbing pid=0 must not reach the syscall.
+        if self.proc.pid > 0:
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         try:
             self.proc.wait(timeout=5)
         except (subprocess.TimeoutExpired, OSError, ValueError):

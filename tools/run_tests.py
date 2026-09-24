@@ -45,10 +45,6 @@ suite's own source is then read to work out how to run it:
     port was never the whole hazard anyway. The live rigs assert timing, and a
     suite measuring a ~1 s race while three others saturate the CPU is a suite
     that fails for the wrong reason.
-  * WINDOWS-BOUND — a suite asserting `WinError` / `MoveFileEx` /
-    `FILE_SHARE_DELETE` semantics is testing something POSIX does not do (on
-    Linux `os.replace` over an open file simply succeeds). Skipped with that
-    reason printed, never silently.
   * DRIFT GUARD — the suite, or a helper module it imports out of the tests
     directory, mentions a source-contract check. Its verdict is then hunted for
     in the output and reported separately from the pass/fail count.
@@ -176,7 +172,6 @@ SLOW = {
 _FLAG = re.compile(r"""["'](--[a-z][a-z0-9-]*)["']""")
 _EXCLUSIVE = re.compile(r"""\buvicorn\b|ORGTREE_(?:BRIDGE_|PUBLIC_)?PORT""")
 _DOCKERISH = re.compile(r"""["']docker["']""")
-_WINDOWS = re.compile(r"winerror|WinError|FILE_SHARE_DELETE|MoveFileEx", re.I)
 # deliberately NOT a bare /drift/ — several suites use the word in prose
 # ("the return shape had drifted") without carrying a guard, and a false
 # positive here turns the rot alarm into background noise
@@ -225,14 +220,13 @@ _TOTAL_LINE = re.compile(r"ALL\s+[\d,]+\s+CHECKS PASS|checks passed|^ℹ\s*pass\
 
 class Suite:
     def __init__(self, sid, cmd_fast, cmd_full, cwd, *, exclusive=False,
-                 windows_only=False, guard=False, guard_hint="",
-                 fast_why="", skip="", port_data=""):
+                 guard=False, guard_hint="", fast_why="", skip="",
+                 port_data=""):
         self.id = sid
         self.cmd_fast = cmd_fast          # argv, or None = full tier only
         self.cmd_full = cmd_full
         self.cwd = cwd
         self.exclusive = exclusive
-        self.windows_only = windows_only
         self.guard = guard
         self.guard_hint = guard_hint
         self.fast_why = fast_why
@@ -336,7 +330,6 @@ def discover(py):
             # default run stubs the daemon out
             exclusive=bool(_EXCLUSIVE.search(src)
                            or (_DOCKERISH.search(src) and "--docker" not in flags)),
-            windows_only=bool(_WINDOWS.search(src)),
             guard=bool(_GUARDISH.search(blob)),
             guard_hint=(_GUARDISH.search(blob).group(0)
                         if _GUARDISH.search(blob) else ""),
@@ -589,9 +582,6 @@ def plan_for(suites, args):
             skipped.append((s, "--no-frontend"))
         elif s.skip:
             skipped.append((s, s.skip))
-        elif s.windows_only and os.name != "nt":
-            skipped.append((s, "asserts Windows filesystem semantics "
-                               "(WinError/MoveFileEx) — not meaningful here"))
         elif s.cmd(args.full) is None:
             skipped.append((s, SLOW.get("test_" + s.id.replace("-", "_") + ".py",
                                         {}).get("why", "full tier only")
@@ -668,8 +658,7 @@ def main():
               "and a sqlite-backed claim_data_root() migrates it.")
         print("Set ORGTREE_DATA to an explicit scratch path before running "
               "this, e.g.:")
-        print(r'  $env:ORGTREE_DATA = "C:\...\scratch\...\rig-data"; '
-              r'python tools\run_tests.py')
+        print('  export ORGTREE_DATA="$(mktemp -d)"; python tools/run_tests.py')
         return 2
 
     py = _interpreter()

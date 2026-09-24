@@ -208,7 +208,7 @@ test('§4 Runtime reads and writes both machine-wide lifecycle controls', async 
       body: { enabled: false },
     })
     const checkup = view.el.querySelector<HTMLInputElement>(
-      'input[aria-label="check on working agents after 30 minutes"]')!
+      'input[aria-label="check on working agents after 20 minutes"]')!
     assert.equal(checkup.checked, true, 'checkups default on')
     await inAct(async () => { checkup.click(); await flush(10) })
     assert.equal(checkup.checked, false)

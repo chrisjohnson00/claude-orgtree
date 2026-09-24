@@ -126,7 +126,7 @@ def isolated_process() -> None:
     real_run = fallback_probe.subprocess.run
     seen: dict[str, object] = {}
     original_cfg = os.environ.get("CLAUDE_CONFIG_DIR")
-    os.environ["CLAUDE_CONFIG_DIR"] = "C:\\live-config-must-not-be-used"
+    os.environ["CLAUDE_CONFIG_DIR"] = "/live-config-must-not-be-used"
 
     def fake_run(argv, **kwargs):
         seen["argv"] = argv
@@ -163,9 +163,9 @@ def registry_and_schedule() -> None:
     old_identity = accounts.resolve_key_identity
     old_cfg = os.environ.get("CLAUDE_CONFIG_DIR")
     accounts.resolve_key_identity = lambda _kid: ""  # type: ignore[assignment]
-    os.environ["CLAUDE_CONFIG_DIR"] = "C:\\backend-registration-config"
+    os.environ["CLAUDE_CONFIG_DIR"] = "/backend-registration-config"
     try:
-        rec = accounts.register_key("second-test-token", "C:\\mint-session")
+        rec = accounts.register_key("second-test-token", "/mint-session")
         wrapped = "sk-ant-oat01-not-a-real\r\n  wrapped-token"
         normalized = "sk-ant-oat01-not-a-realwrapped-token"
         wrapped_rec = accounts.register_key(wrapped)
@@ -179,9 +179,9 @@ def registry_and_schedule() -> None:
     check("registration stores an observed registered_at, not a fictional creation time",
           lambda: eq(bool(re.fullmatch(r".+Z", str(row.get("registered_at") or ""))), True))
     check("operator mint provenance remains its own optional field", lambda: eq(
-        row.get("mint_config_dir"), "C:\\mint-session"))
+        row.get("mint_config_dir"), "/mint-session"))
     check("backend registration session is separately and honestly named", lambda: eq(
-        row.get("registered_from_config_dir"), "C:\\backend-registration-config"))
+        row.get("registered_from_config_dir"), "/backend-registration-config"))
     check("wrapped setup-token whitespace is removed before durable routing", lambda: eq(
         (tokens.get(wrapped_rec["id"]), accounts.key_for_token(normalized)),
         (normalized, wrapped_rec["id"])))
@@ -199,7 +199,7 @@ def registry_and_schedule() -> None:
     check("readout carries registration facts without relabelling them as mint facts", lambda: eq(
         (readout_row["registered_at"], readout_row["mint_config_dir"],
          readout_row["registered_from_config_dir"]),
-        (row["registered_at"], "C:\\mint-session", "C:\\backend-registration-config")))
+        (row["registered_at"], "/mint-session", "/backend-registration-config")))
 
     reset()
     calls: list[str] = []

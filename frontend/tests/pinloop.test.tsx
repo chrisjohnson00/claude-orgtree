@@ -47,7 +47,7 @@ test('a sticky ↑-you chip keeps its target at the flow boundary',
     installFetch(s)
     // One human turn is enough. The envelope is important: assistant or peer
     // rows must not participate in this chip's scan.
-    s.userMsg(`FROM ${USER} (user)\n\nplease inspect this`)
+    s.mailMsg(USER, 'please inspect this')
     await inAct(async () => { await refreshConvo(slug, nid) })
 
     const proto = (globalThis as unknown as {
@@ -59,10 +59,12 @@ test('a sticky ↑-you chip keeps its target at the flow boundary',
       if (this.classList.contains('msgs')) return rect(0, 400) as DOMRect
       if (this.classList.contains('pinuser')) return rect(0, 5) as DOMRect
       // calcPin measures the transcript ROW wrapper, whose sole child is Msg's
-      // `.msg.user` element — it intentionally does not measure that child.
+      // root element — `.msg.user` for a plain row, `.typed-input` for a
+      // typed one (mailMsg's segments take this desk through that path) — it
+      // intentionally does not measure that child.
       const child = this.firstElementChild as HTMLElement | null
-      if (this.children.length === 1 && child?.classList.contains('msg')
-          && child.classList.contains('user')) {
+      if (this.children.length === 1 && child
+          && (child.matches('.msg.user') || child.matches('.typed-input'))) {
         userReads += 1
         // The old in-flow chip moved the row by its height PLUS `.msgs`' 7px
         // flex gap. Its height-only compensation therefore still alternated

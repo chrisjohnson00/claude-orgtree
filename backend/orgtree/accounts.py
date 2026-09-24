@@ -121,7 +121,7 @@ def registry_path() -> str:
 _SECRET_PATTERNS = (
     re.compile(r"sk-ant-[A-Za-z0-9_-]+"),
     re.compile(r"\beyJ[A-Za-z0-9_-]{10,}"),                 # JWT-ish
-    re.compile(r"\b[A-Za-z0-9+/_-]{40,}={0,2}\b"),          # long opaque run
+    re.compile(r"\b[A-Za-z0-9+_-]{40,}={0,2}\b"),           # long opaque run
 )
 # keys whose NAME alone means a caller is handing us the wrong thing
 _SECRET_KEYS = {"accesstoken", "access_token", "refreshtoken", "refresh_token",
@@ -408,7 +408,10 @@ def register_key(token: str, mint_config_dir: str | None = None) -> dict[str, An
     happens before anything can form an opinion about the value; the identity
     lookup runs afterwards, against a token that is already durable, and its
     failure costs nothing but the uuid shown beside the row (which is in
-    practice always — a setup-token key cannot read its own profile).
+    practice always — a setup-token key cannot read its own profile). But the
+    row itself must pass `_reject_secrets` BEFORE that write, or a row `save`
+    refuses leaves the token durable with no row pointing at it — an orphan
+    `tokens.put` can never clean up on its own.
 
     Idempotent on the VALUE: re-pasting a key that is already stored lands on
     its existing row (same id — the id IS a hash of the token) and keeps its
@@ -420,7 +423,6 @@ def register_key(token: str, mint_config_dir: str | None = None) -> dict[str, An
     mint_config_dir = _optional_mint_config_dir(mint_config_dir)
     kid = key_for_token(token) or (
         "k" + hashlib.sha256(token.encode("utf-8")).hexdigest()[:12])
-    tokens.put(kid, token)                     # ← durable before anything else
     created = False
     with _lock:
         doc = load(strict=True)
@@ -437,9 +439,13 @@ def register_key(token: str, mint_config_dir: str | None = None) -> dict[str, An
             }
             if mint_config_dir is not None:
                 row["mint_config_dir"] = mint_config_dir
+            _reject_secrets(row)                # validate before the token becomes durable
             doc["keys"].append(row)
             created = True
+            tokens.put(kid, token)              # ← durable only once the row is known-good
             save(doc)
+        else:
+            tokens.put(kid, token)              # re-sync the store if it was cleared out-of-band
     # the identity lookup, OUTSIDE the lock (it is a network call) and after
     # durability. `resolve_key_identity` re-reads the token it just stored.
     uuid = resolve_key_identity(kid)

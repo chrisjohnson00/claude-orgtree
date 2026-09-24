@@ -28,7 +28,7 @@
 // Run:  cd frontend && node tests/run.mjs envelopeflash
 
 import {
-  FakeServer, flush, installFetch, mountView, realClock, useFakeClock,
+  FakeServer, flush, installFetch, mailRow, mountView, realClock, useFakeClock,
 } from './harness'
 import test from 'node:test'
 import type { TestContext } from 'node:test'
@@ -143,10 +143,14 @@ frameTest('§1 pending → held → projected: the message is on screen exactly 
   await flush()
   snap()
 
-  // 3. the row lands, projected — the same payload retires the bubble
+  // 3. the row lands, projected — the same payload retires the bubble. The
+  //    fixed server projects a typed `mail` segment (`ev` decodable, `from`
+  //    the user), not the raw bracket text §3 feeds the OLD-server path.
   const at = m.at
   s.echo()
-  s.messages[s.messages.length - 1]!.text = visibleOf(at, body)
+  const settled = s.messages[s.messages.length - 1]!
+  settled.text = visibleOf(at, body)
+  settled.segments = [{ kind: 'mail', rows: [mailRow('@user', body, { at }) as never] }]
   s.chat = ((orig) => (last: number | null) =>
     ({ ...orig(last), prompts_withheld: 0 }))(s.chat.bind(s))
   await refreshConvo(SL, ND, { force: true })

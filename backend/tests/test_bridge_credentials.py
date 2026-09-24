@@ -233,7 +233,11 @@ def test_malformed_install_key_fails_closed():
     else:
         raise AssertionError("a live key disappearance silently rotated tokens")
     finally:
-        with open(path, "wb") as f:
+        # os.remove() above means this recreates the file; a plain open("wb")
+        # would apply umask and leave group/other bits set, which
+        # _read_install_key correctly refuses on the next read.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
             f.write(original)
     assert bridgeauth.org_credential(store.load_org(slug)) == current_token
 

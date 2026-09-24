@@ -357,7 +357,9 @@ def t_stderr_owners_and_safety_controls():
 
 def t_supervisor_uses_the_instrumented_seams():
     """Source wiring guard; behavioral checks above prove each seam itself."""
-    src = inspect.getsource(S._run_one_turn)
+    # _run_one_turn is now a thin wrapper; the pinned body lives in
+    # _run_one_turn_recorded.
+    src = inspect.getsource(S._run_one_turn_recorded)
     assert "warmpool.identity_snapshot(" in src and "env=env" in src
     assert "turn_hash, turn_components" in src
     assert "warmpool.claim_snapshot(" in src

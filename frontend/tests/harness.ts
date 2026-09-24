@@ -119,6 +119,24 @@ process.on('beforeExit', () => { try { dom.window.close() } catch { /* already g
 
 export const REPS = Number(process.env.ORGTREE_TEST_REPS || '1') || 1
 
+let mailRowSeq = 0
+/** A typed WireMailRow, as the real server writes into `segments`/pending
+ *  mail — `ev` carries the decodable event, so `decodeEventRow` and
+ *  `authoredUserLabel` see the same thing production does. `from` decides
+ *  authorship: `'@user'` is the human (`isAuthoredUser` true), anything else
+ *  models a peer's or agent's mail projected into this node's own inbox. */
+export function mailRow(from: string, body: string,
+  extra: Record<string, unknown> = {}): Record<string, unknown> {
+  const actorKind = from === '@user' ? 'user' : from.startsWith('@') ? 'external' : 'agent'
+  return {
+    id: `mail-${++mailRowSeq}`, from, kind: 'message',
+    at: new Date(Date.now()).toISOString(), body,
+    ev: { v: 1, variant: 'ordinary.message', actor: { kind: actorKind, id: from },
+      object: null, engine_authored: false, body },
+    ...extra,
+  }
+}
+
 // -------------------------------------------------------------- the server
 /** One node's conversation as the server holds it. Deliberately models the
  *  three carriers a message passes through, in order — the client ghost is not
@@ -143,6 +161,11 @@ export class FakeServer {
   workItems: unknown[] = []
   workArchived: unknown[] = []
   workBacklogged: unknown[] = []
+  /** the org's presented documents, as `GET /documents` serves it. Once this
+   *  answers at all it is authoritative — the gallery only falls back to a
+   *  node's own bootstrap `documents` prop while this list is absent, so a
+   *  test that wants its fixture rows to actually show up must seed this. */
+  documents: unknown[] = []
   /** every chat request the client has made, newest last */
   requests: { last: number | null; at: number }[] = []
   /** truncation tier the real `node_chat` applies to a pending body */
@@ -193,6 +216,18 @@ export class FakeServer {
   userMsg(text: string): ChatMessage {
     const m: ChatMessage = { role: 'user', text, seq: this.seq++, ts: new Date(Date.now()).toISOString() }
     this.messages.push(m)
+    return m
+  }
+
+  /** A durable USER-role row carrying a typed `mail` segment — what the real
+   *  server now writes, and what `authoredUserLabel`/the desk's mail card both
+   *  decode off `ev`, not off bracket-marker text sniffed out of `text`. Bare
+   *  `userMsg` stays as it is, on purpose: a few suites fix the OLD untyped
+   *  shape deliberately, to prove the desk still renders it (never guessing
+   *  authorship from a marker-looking string). This is the typed sibling. */
+  mailMsg(from: string, body: string, extra: Record<string, unknown> = {}): ChatMessage {
+    const m = this.userMsg(body)
+    m.segments = [{ kind: 'mail', rows: [mailRow(from, body, extra)] }]
     return m
   }
 
@@ -324,7 +359,8 @@ export function installFetch(server: FakeServer): Transport {
                         backlogged: server.workBacklogged.length },
               now: new Date(Date.now()).toISOString(),
             }
-            : { ok: true }
+            : /\/documents$/.test(u.pathname) ? { documents: server.documents }
+              : { ok: true }
     return new Promise((resolve, reject) => {
       // every real response carries the answering process's id; the stub does
       // too, or the restart detector in `req` would be exercised by nothing

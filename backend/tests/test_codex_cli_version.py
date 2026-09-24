@@ -64,7 +64,7 @@ def home(latest="0.153.3", checked="2026-09-04T19:43:25.288470200Z",
 
 
 def status(version="0.150.1", codex_home=None, installed=True,
-           source="pin", path=r"C:\data\codex\...\codex.exe"):
+           source="pin", path="/data/codex/.../codex"):
     return {"installed": installed, "path": path if installed else None,
             "source": source, "version": version,
             "codex_home": codex_home if codex_home is not None else home(),
@@ -200,7 +200,7 @@ def it_names_the_binary_and_where_it_came_from():
     for source, phrase in (("pin", "pinned under the data root"),
                            ("path", "found on PATH"),
                            ("env", "ORGTREE_CODEX override")):
-        st = status("0.150.1", source=source, path=rf"C:\{source}\codex.exe")
+        st = status("0.150.1", source=source, path=f"/{source}/codex")
         v = providers.codex_cli_version_status(st, now=NOW)
         assert v["source"] == source and v["path"] == st["path"], v
         note = providers.codex_cli_version_note(st, now=NOW)
@@ -234,7 +234,8 @@ def refusal_names_the_cli_not_the_account():
         providers.codex_model_inventory = lambda **kw: {
             "available": True, "models": ["gpt-5.6-sol", "gpt-reserve"],
             "error": None}
-        got = providers.conditional_codex_availability("astra", status=st)
+        got = providers.conditional_codex_availability(
+            "astra", status=st, now=NOW)
     finally:
         providers.codex_model_inventory = saved
     assert got["enabled"] is False and got["evidence"] == "model-missing", got

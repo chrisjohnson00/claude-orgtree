@@ -203,13 +203,6 @@ def clear_log() -> None:
 
 
 def _pid_alive(pid: int) -> bool:
-    if os.name == "nt":
-        try:
-            r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                               capture_output=True, text=True, timeout=15)
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        return str(pid) in (r.stdout or "")
     try:
         os.kill(pid, 0)
         return True
@@ -480,23 +473,6 @@ def sec_exit() -> None:
     # TerminateProcess, which runs no exit handler.
     check("exit · deleting a remote-controlled node stops its server",
           _deleted_node_takes_its_server_with_it)
-
-    def _leash_is_real():
-        src = open(os.path.join(_REPO, "backend", "orgtree", "supervisor.py"),
-                   encoding="utf-8").read()
-        i = src.find("def _leash(")
-        seg = src[i:i + 700]
-        assert "AssignProcessToJobObject" in seg and "_ORPHANS.add" in seg, seg
-        assert "except Exception" in seg, seg
-    check("exit · characterised: the leash is a Windows job object with a "
-          "POSIX atexit fallback, and it swallows its own failures — so "
-          "'leashed' is best-effort, which is exactly why reconcile clears "
-          "stale flags on startup", _leash_is_real)
-    note("if the leash silently fails (the except swallows it) a surviving "
-         "server outlives the backend, and reconcile then clears the flag on "
-         "startup — leaving a phone attached to a session orgtree believes is "
-         "free. Cheap hardening: record the pid (already stored) and check it "
-         "is gone before clearing the flag, or kill it by pid.")
 
 
 # ═════════════════════════════════════════════════════════════════════════ main
