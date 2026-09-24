@@ -2,11 +2,11 @@
 """The Claude Code CLI pin (D-222) — the version orgtree installs, and the
 version floors that decide what a resolved CLI may be ASKED to do.
 
-WHY THIS IS ITS OWN MODULE, and why it imports nothing. `update.ps1` and
-`update.sh` have to know which version to install, and the one thing worse
-than a pin is a pin written down twice: a shell literal and a Python literal
-drift, and the symptom is a machine that reports the version it installed
-while running a different one. Both scripts therefore READ `PIN` out of here —
+WHY THIS IS ITS OWN MODULE, and why it imports nothing. `update.sh` has to
+know which version to install, and the one thing worse than a pin is a pin
+written down twice: a shell literal and a Python literal drift, and the
+symptom is a machine that reports the version it installed while running a
+different one. The script therefore READS `PIN` out of here —
 
     python -c "import sys; sys.path.insert(0, 'backend'); \
                from orgtree import clipin; print(clipin.PIN)"

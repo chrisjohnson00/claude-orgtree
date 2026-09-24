@@ -130,9 +130,9 @@ in favour of per-org kiosk config; a legacy value is migrated once at startup an
 been the whole credential. Anyone who reaches an exposed port controls every org and can make agents
 run commands on the machine. VPN or SSH tunnel only; for public access use a kiosk instead.
 
-Both deploy scripts keep a convenience switch (`-ExposeAdmin` / `--expose-admin`) that sets the
-variable for that launch. A service definition sets the variable directly and needs no switch —
-which is why it moved here from argv (user ruling 2026-08-04, superseding D-39).
+`update.sh` keeps a convenience switch (`--expose-admin`) that sets the variable for that launch. A
+service definition sets the variable directly and needs no switch — which is why it moved here from
+argv (user ruling 2026-08-04, superseding D-39).
 
 ⚠ It is **stripped from every agent's environment** by `clean_env()` (`supervisor.py:406`): env vars
 are inherited by child processes, and whether the host is reachable off loopback is not an agent's

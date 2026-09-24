@@ -647,8 +647,8 @@ class BackendMismatch(MigrationError):
     (phase1-audit, 2026-09-04). Which is the shape of a real incident: the
     flip goes out, something unrelated looks wrong, someone reverts the CODE
     without restoring the DATA, and the org appears to have vanished while
-    `update.ps1`'s health check — which only wants HTTP 200 from /api/orgs —
-    reports the rollback a success."""
+    a deploy health check that only wants HTTP 200 from /api/orgs reports the
+    rollback a success."""
 
 
 def active_databases(root: str | None = None) -> list[str]:
@@ -731,10 +731,9 @@ def _refusal_text(root: str, pending: list[str]) -> str:
         f"\n"
         f"\n"
         f"  YOU ALMOST CERTAINLY WANT YOUR NORMAL DEPLOY, WHICH DOES THIS FOR YOU:\n"
-        f"      Windows   powershell -ExecutionPolicy Bypass -File update.ps1\n"
-        f"      POSIX     ./update.sh\n"
-        f"  Since 2026-09-04 those detect this exact situation before they stop\n"
-        f"  anything and run the migration as part of the deploy -- stop, migrate,\n"
+        f"      ./update.sh\n"
+        f"  Since 2026-09-04 it detects this exact situation before it stops\n"
+        f"  anything and runs the migration as part of the deploy -- stop, migrate,\n"
         f"  export-verify, start -- keeping a validated export you can roll back to.\n"
         f"  Reaching THIS message means the backend was started some other way.\n"
         f"\n"

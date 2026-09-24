@@ -25,8 +25,8 @@ usually means *the machine next to you*, not the internet.
 
 ## Tier 1 — orgtree alone
 
-**What you run.** The backend (`update.ps1` / `./update.sh`, then `run.ps1` /
-`./run.sh`) and nothing else. The admin app binds `127.0.0.1:7360` and never
+**What you run.** The backend (`./update.sh`, or `python -m orgtree.api` from
+`backend/`) and nothing else. The admin app binds `127.0.0.1:7360` and never
 leaves the loopback interface; the kiosk listener on `7361` is part of the same
 process and only answers URLs carrying a kiosk's secret token.
 
@@ -122,9 +122,9 @@ stays on, a home server, a second laptop. Nothing needs to leave the LAN.
 **What you run.** The same hub, with its **API-only** listener enabled, and an
 address the other machines can reach:
 
-```powershell
+```bash
 cd hub
-$env:HUB_PUBLIC = "1"; docker compose up -d --build   # API-only listener, host port 7378
+HUB_PUBLIC=1 docker compose up -d --build   # API-only listener, host port 7378
 ```
 
 Peers then use `http://<this-machine's-LAN-IP>:7378` as their hub address — an
@@ -161,18 +161,19 @@ caller's own org secret.
 
 ### Optional: reaching it from outside your network
 
-Only if peers genuinely live elsewhere. `hub/expose-hub.ps1` opens a Cloudflare
-quick tunnel to the API-only port:
+Only if peers genuinely live elsewhere. Open a Cloudflare quick tunnel to the
+API-only port with
+[`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/):
 
-```powershell
-.\expose-hub.ps1          # tunnels host port 7378
+```bash
+cloudflared tunnel --url http://localhost:7378    # the API-only port, never 7370
 ```
 
 > ☠ **Read this before running it.** Exposure changes who can join from
 > “someone on my network” to “anyone with the URL”, and registration is open by
 > design. The address space, the roster of who is on your hub, and 30 days of
-> everyone's mail all sit behind one secret URL. The script refuses to tunnel
-> 7370 for the reason above — never work around that. A quick tunnel's URL also
+> everyone's mail all sit behind one secret URL. Never tunnel 7370, for the
+> reason above. A quick tunnel's URL also
 > changes on restart, and every peer configured with the old one silently
 > queues; if more than one machine depends on you, use a stable hostname.
 

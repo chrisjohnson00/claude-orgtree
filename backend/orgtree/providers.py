@@ -553,8 +553,8 @@ def codex_status(force: bool = False) -> dict[str, Any]:
 
 
 # ── codex CLI version drift ────────────────────────────────────────────────
-# ⚠ NOTHING IN THIS REPO EVER REFRESHES THE PIN. `update.ps1`, `update.sh` and
-# `tools/install-autostart.ps1` contain no `codex` step — the pin is a manual
+# ⚠ NOTHING IN THIS REPO EVER REFRESHES THE PIN. `update.sh` contains no
+# `codex` step — the pin is a manual
 # `npm install --prefix <data>/codex @openai/codex` from the setup guide, so it
 # is frozen at whenever someone last ran that by hand.
 #

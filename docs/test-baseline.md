@@ -281,26 +281,16 @@ condition it was written for — the same drift-detector shape as `harvest` and
 `turn-lifecycle`.
 
 
-### ⚠ The result also depends on YOUR CHECKOUT: a junctioned node_modules
+### ⚠ The result also depends on YOUR CHECKOUT: a linked node_modules
 
 A frontend change is untestable without `frontend/node_modules`, and the team
 pattern is to point at the shared checkout's copy rather than install a second
 one.
 
-⚠ **DO NOT USE `ln -s` FROM GIT BASH FOR THIS.** Without the native-symlink
-privilege MSYS silently falls back to COPYING, so the command that looks like
-a link duplicates the entire `node_modules` tree into your worktree. Measured
-2026-09-04: it produced a real directory (`Attributes: Directory`, no
-`ReparsePoint`) that had to be removed with `rmdir /s`. The earlier version of
-this note recommended exactly that command.
+    ln -s <checkout>/frontend/node_modules frontend/node_modules
 
-Use a junction from PowerShell, which is a real reparse point:
-
-    New-Item -ItemType Junction -Path frontend\node_modules `
-      -Target E:\Libraries\Desktop\claude-orgtree\frontend\node_modules
-
-Check what you got before trusting it — `(Get-Item <path> -Force).Attributes`
-must say `ReparsePoint`, and `.Target` must name the shared copy.
+Check what you got before trusting it — `readlink frontend/node_modules` must
+name the shared copy.
 
 That makes esbuild resolve, so **`crash-reports` PASSES for you**, like a run
 inside `E:\`. Same suite, opposite result, and this one is
@@ -319,10 +309,9 @@ yours:
 > pristine `3ba27db` worktree. Baseline it before reading anything into it.
 
 ⚠ The suite needs `frontend/node_modules`, which a fresh git worktree does not
-have. Rather than a second `npm ci`, junction it at the shared checkout's copy
-— `New-Item -ItemType Junction` in PowerShell (`cmd /c mklink` does not work
-through Git Bash). Remove the junction with `rmdir` BEFORE `git worktree
-remove`, or the removal fails with `Invalid argument`.
+have. Rather than a second `npm ci`, symlink it at the shared checkout's copy
+(`ln -s <checkout>/frontend/node_modules frontend/node_modules`). Remove the
+symlink with `rm` BEFORE `git worktree remove`.
 
     cd frontend && node tests/run.mjs            # all of it, ~33 s
     cd frontend && node tests/run.mjs convo      # one file by substring

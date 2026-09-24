@@ -187,14 +187,13 @@ when the machine is quiet. An explicit forced restart stops working agents
 first and requires a reason; those agents need to be messaged afterwards to
 resume work. An optional deadline on a primed restart can force the deploy
 if quiet never arrives, with a wake-up for interrupted agents. Restart notices
-identify the running commit. Works on Windows (`update.ps1`) and Linux/macOS
-(`update.sh`).
+identify the running commit. The deploy is `update.sh`.
 
 **Share an org with the world — kiosk mode.** Any org can be exposed
 through a **preauthenticated secret URL** on a separate public listener,
 with hard caps on credits, spend, and workspace storage; the admin app
-itself never leaves 127.0.0.1. `expose.ps1` opens a Cloudflare quick tunnel
-so outsiders reach it with zero setup on your router. Details below.
+itself never leaves 127.0.0.1. A Cloudflare quick tunnel lets outsiders reach
+it with zero setup on your router. Details below.
 
 The full interaction manual — every gesture, badge, and panel — is
 [docs/ui-guide.md](docs/ui-guide.md).
@@ -208,11 +207,8 @@ The full interaction manual — every gesture, badge, and panel — is
   Code CLI as its harness, but no separate OpenRouter CLI or Anthropic login
   for that route; it uses the key's prepaid credits.
 - **Python 3.11+**
-- **Node.js 18+** (builds the frontend; also used to invoke the Claude Code
-  CLI in a newline-safe way on Windows)
-- Windows, macOS, or Linux for the host-mode core (ledger, turns, canvas,
-  kiosk URLs). Developed and battle-tested on Windows; POSIX paths are
-  handled but less traveled — issues welcome.
+- **Node.js 18+** (builds the frontend)
+- **Linux** for the host.
 - **Sandboxed orgs** (and kiosks, which default the sandbox on) additionally
   require **Windows with Docker Desktop's WSL2 backend**: each org's virtual
   disk is loop-mounted inside the docker-desktop WSL distro and the backend
@@ -220,9 +216,8 @@ The full interaction manual — every gesture, badge, and panel — is
 
 ## Installation
 
-The update scripts below do all of this for you, including creating the
-virtualenv — `./update.sh` (Linux/macOS/Git Bash) or `update.ps1` (Windows) on
-a fresh clone is a complete install. By hand:
+`./update.sh` does all of this for you, including creating the virtualenv, so
+running it on a fresh clone is a complete install. By hand:
 
 ```bash
 git clone https://github.com/Maurdekye/claude-orgtree.git
@@ -230,7 +225,7 @@ cd claude-orgtree
 
 # a virtualenv, so the installed set is exactly what requirements.txt says
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\Activate.ps1
+source .venv/bin/activate
 
 # backend dependencies
 pip install -r requirements.txt
@@ -265,11 +260,11 @@ The supervisor auto-detects this private install and prefers it; your global
 `claude` stays untouched. Without it, messages to a busy agent deliver when
 its current response ends instead of after its next tool call.
 
-You only need that command for a **first** install. `update.ps1` / `update.sh`
-manage the pin from then on: each deploy compares what is installed against
+You only need that command for a **first** install. `update.sh` manages the
+pin from then on: each deploy compares what is installed against
 `backend/orgtree/clipin.py`'s `PIN` and upgrades it in place if it is behind —
-in the window between stopping and starting the backend, because a running
-`claude.exe` cannot be overwritten on Windows. It is a floor, not an equality:
+in the window between stopping and starting the backend, so no running turn
+has the CLI replaced under it. It is a floor, not an equality:
 a **newer** CLI than the pin is reported and left alone, never rolled back. If
 the upgrade fails the deploy still restarts and says so; nothing needs to be
 uninstalled by hand.
@@ -304,8 +299,7 @@ npm install --prefix ~/orgtree/codex @openai/codex@0.153.3 --save-exact
 npx --prefix ~/orgtree/codex codex login
 
 # Antigravity: flash (seat 1), pro (2) — Google's own installer, then sign in once
-winget install Google.AntigravityCLI                          # Windows
-curl -fsSL https://antigravity.google/cli/install.sh | bash   # macOS / Linux
+curl -fsSL https://antigravity.google/cli/install.sh | bash
 agy
 ```
 
@@ -353,23 +347,20 @@ listener before other work. Details and the trust
 model: [hub/README.md](hub/README.md) and
 [docs/setup-guide.md §3](docs/setup-guide.md).
 
-**Updating:** run `update.ps1` (or double-click `update.cmd`) on Windows, or
-`./update.sh` on Linux/macOS — the two are step-for-step equivalents. Either
-pulls the latest changes, rebuilds the UI, installs any new dependencies, and
-restarts the backend in the background with a health check. `update.sh` also
-runs under Git Bash on Windows. Agents can trigger the same deploy from
-inside an org with the `orgtree_self_restart` tool (top-level or
-user-audience holders; both platforms), or schedule it with
+**Updating:** run `./update.sh`. It pulls the latest changes, rebuilds the UI,
+installs any new dependencies, and restarts the backend in the background with
+a health check. Agents can trigger the same deploy from inside an org with the
+`orgtree_self_restart` tool (top-level or user-audience holders), or schedule
+it with
 `orgtree_prime_restart`. The deploy runs detached and the hub container can
 be rebuilt in the same call without ever touching its data volume.
 
-Both accept a deliberately awkward `-ExposeAdmin` / `--expose-admin` switch,
+It accepts a deliberately awkward `--expose-admin` switch,
 which sets `ORGTREE_EXPOSE_ADMIN` and binds the **admin** API to `0.0.0.0`
 instead of loopback. The admin API has no password, token or login —
 reaching the port *is* the credential — so only do this behind a VPN, an SSH
 tunnel, or an authenticating reverse proxy. The environment variable is what
-actually gates it, on purpose: a service definition (Task Scheduler,
-systemd) can set it directly with no switch needed, which the old
+actually gates it, on purpose: a service definition (systemd) can set it directly with no switch needed, which the old
 command-line-only design couldn't offer. What's unchanged is that no *org
 setting or doc key* can turn it on, and it's stripped from every agent's own
 environment regardless (`clean_env`) — so no agent can either. To share one
@@ -491,18 +482,26 @@ credit cap, spend limit, storage limit, the share URL with **copy** and
 **pause/reactivate** for the URL.
 
 ```bash
-ORGTREE_PUBLIC_PORT=7361 python -m orgtree.api   # update.ps1 sets this by default
+ORGTREE_PUBLIC_PORT=7361 python -m orgtree.api   # update.sh sets this by default
 ```
 
-**Reaching it from the internet — no port forwarding needed:** run
-`expose.ps1`. It downloads `cloudflared` on first use and opens a
-**Cloudflare quick tunnel** to the public listener: you get a random
-`https://….trycloudflare.com` hostname that works from anywhere, over
-HTTPS, for as long as the window stays open — no account, no router
-changes, and the share URLs shown in the app switch to the live tunnel
-hostname while it runs. Close it and the URL dies. (For a permanent,
-stable hostname later: a named Cloudflare tunnel with your own domain —
-then set `ORGTREE_PUBLIC_ORIGIN`.)
+**Reaching it from the internet — no port forwarding needed:** open a
+**Cloudflare quick tunnel** to the public listener with
+[`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/):
+
+```bash
+cloudflared tunnel --url http://localhost:7361
+# copy the printed https://<random>.trycloudflare.com URL, then:
+echo 'https://<random>.trycloudflare.com' > "${ORGTREE_DATA:-$HOME/orgtree}/.public_origin"
+```
+
+The hostname works from anywhere, over HTTPS, for as long as `cloudflared`
+runs — no account and no router changes. While `.public_origin` holds the live
+hostname, the share URLs shown in the app use it; delete the file when the
+tunnel stops. Stop `cloudflared` and the URL dies. (For a permanent, stable
+hostname: a named Cloudflare tunnel with your own domain — then set
+`ORGTREE_PUBLIC_ORIGIN`.) Never tunnel the admin port (7360): it has no
+password, token or login, so reaching it is full control of every org.
 
 For each kiosk org, enforced **server-side on the public listener** (you, on
 the admin side, keep full rights in the same org — visit it like any other):
@@ -586,7 +585,7 @@ hatch: a real API key, or the word `subscription` to copy credentials in.)
 visitors can make agents do anything the fixed rights allow, so give such
 orgs no bash and workspace-only folders. The secret URL is a capability:
 anyone holding it is that kiosk's visitor, so share deliberately and rotate
-freely — and prefer serving it through an HTTPS tunnel (`expose.ps1`) so
+freely — and prefer serving it through an HTTPS tunnel (above) so
 tokens aren't sniffable in transit.
 
 ## A word on safety and cost
