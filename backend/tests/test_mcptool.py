@@ -2683,10 +2683,36 @@ def _():
     # connection returns instantly (checked above), but a host that accepts
     # nothing and answers nothing — a paused container, a firewall DROP, a
     # dead bridge — makes EVERY tool call of EVERY agent wait 5 s in silence.
-    # 192.0.2.1 is TEST-NET-1: routable nowhere, nothing is bound here.
+    # 192.0.2.1 (TEST-NET-1) used to model that by never being routed at all,
+    # but on this host it answers ECONNREFUSED/EHOSTUNREACH immediately —
+    # that is the FAST path this test is not measuring. A real black hole
+    # accepts the TCP connection and then never writes a byte, so the fixture
+    # has to do that itself: a local listener that accepts and goes silent.
+    hole = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    hole.bind(("127.0.0.1", 0))
+    hole.listen(1)
+    hole_port = hole.getsockname()[1]
+    stop_hole = threading.Event()
+
+    def _swallow():
+        while not stop_hole.is_set():
+            hole.settimeout(0.2)
+            try:
+                conn, _addr = hole.accept()
+            except OSError:
+                continue
+            # accept and hold — never send, never close, until the fixture
+            # tears down (mirrors a paused container/firewall DROP)
+            while not stop_hole.is_set():
+                time.sleep(0.2)
+            conn.close()
+
+    hole_thread = threading.Thread(target=_swallow, daemon=True)
+    hole_thread.start()
+
     bridge = os.path.join(DATA, ".bridge")
     with open(bridge, "w", encoding="utf-8") as f:
-        json.dump({"url": "http://192.0.2.1:7357", "secret": ""}, f)
+        json.dump({"url": f"http://127.0.0.1:{hole_port}", "secret": ""}, f)
     try:
         queue_steer(A, "worker", "black hole")
         dt, out, err, rc = run_hook(A, "worker", scratch(A, "worker"), timeout=40)
@@ -2702,6 +2728,9 @@ def _():
         assert dt < 8, f"the hook exceeded its own 8 s timeout ({dt:.1f}s)"
     finally:
         os.remove(bridge)
+        stop_hole.set()
+        hole_thread.join(timeout=5)
+        hole.close()
     _dt, out2, _e, _rc = run_hook(A, "worker", scratch(A, "worker"))
     assert "black hole" in out2, "the timeout consumed the mail"
 

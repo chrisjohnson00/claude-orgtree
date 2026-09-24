@@ -381,13 +381,14 @@ def main():
     # every later check in this file, which is a rig that damages what it is
     # measuring.
     def _old_shape():
-        class _B:
-            org, node, tool = slug4, "kid", "orgtree_message"
-            args = {"to": "@mcp:quiet4.panel", "body": "x"}
+        # a real AgentCall — the plain class this replaced lacked op_key/
+        # op_epoch, which api._op_unwrap now reads on every call
+        b = api.AgentCall(org=slug4, node="kid", tool="orgtree_message",
+                          args={"to": "@mcp:quiet4.panel", "body": "x"})
 
         class _R:
             state = type("S", (), {"bridge_slug": None})()
-        r = api.agent_call(_B(), _R())
+        r = api.agent_call(b, _R())
         if isinstance(r, dict) and "filed" in r:            # undo D-166
             r["delivered"] = r.pop("filed")
             r.pop("status", None)

@@ -258,6 +258,10 @@ class GateLock:
     def release(self):
         self._inner.release()
 
+    def locked(self):
+        # Python 3.14 threading.Condition probes lock.locked() directly.
+        return self._inner.locked()
+
     __enter__ = acquire
 
     def __exit__(self, *a):

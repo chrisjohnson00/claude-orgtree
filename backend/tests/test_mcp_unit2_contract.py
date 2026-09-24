@@ -229,9 +229,11 @@ class McpUnit2ContractTests(unittest.TestCase):
         owner or inventory, and must not publish any terminal readiness state.
         """
         code = (
-            "import sys,time; "
+            "import os,sys,time; "
             "sys.stderr.write('ready\\n'); sys.stderr.flush(); "
-            "sys.stdout.close(); sys.stdout=None; time.sleep(1)"
+            # sys.stdout.close() leaves fd 1 open (Python-level only); the
+            # pump reads the OS pipe, so the fd itself must close for EOF.
+            "os.close(1); time.sleep(1)"
         )
         proc = subprocess.Popen(  # noqa: S603
             [sys.executable, "-c", code], stdout=subprocess.PIPE,

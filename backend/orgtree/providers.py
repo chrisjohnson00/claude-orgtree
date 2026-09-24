@@ -813,7 +813,8 @@ def codex_model_inventory(
 
 def conditional_codex_availability(
         tier: str, *, force: bool = False,
-        status: dict[str, Any] | None = None) -> dict[str, Any]:
+        status: dict[str, Any] | None = None,
+        now: float | None = None) -> dict[str, Any]:
     """Availability of one conditional Codex tier from exact live membership.
 
     ⚠ THE `model-missing` MESSAGE USED TO BLAME THE ACCOUNT: "the signed-in
@@ -835,7 +836,7 @@ def conditional_codex_availability(
                               "Codex model inventory is unavailable")}
     model_id = CODEX_MODELS[tier]
     if model_id not in set(inventory.get("models") or []):
-        note = codex_cli_version_note(st)
+        note = codex_cli_version_note(st, now=now)
         return {"enabled": False, "evidence": "model-missing", "reason":
                 (f"model '{model_id}' was not in the model list returned to "
                  + (note or "this host's codex CLI"))}
