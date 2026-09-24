@@ -1173,10 +1173,6 @@ def _warm_eligible(org: Any, nid: str, *, ignore_exclusion: bool = False,
         return False, "delivery-in-progress"
     if org.d.get("storage_blocked") and sup.sbx.on_disk(org.d["slug"]):
         return False, "storage-blocked"
-    try:
-        sup._deployment_org_gate(org)
-    except RuntimeError:
-        return False, "deployment-gate"
     return True, ""
 
 
@@ -1252,7 +1248,6 @@ def _control_eligibility_text(reason: str) -> str:
         "inflight": "the agent has a turn pending recovery",
         "delivery-in-progress": "the agent has a delivery in progress",
         "storage-blocked": "the organization storage gate is closed",
-        "deployment-gate": "the current deployment profile blocks this org",
         "provider-lane": "this provider lane cannot keep a parked process",
         "sandboxed": "sandboxed process warming is unavailable",
         "preserving-oracle": "preserving oracle processes are not reusable",

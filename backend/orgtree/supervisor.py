@@ -42,7 +42,7 @@ from functools import wraps
 from typing import Any, Final, Protocol, cast
 
 from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits, events,
-               codex_route, deployment, envelope, failfix, handoff, imgblock,
+               codex_route, envelope, failfix, handoff, imgblock,
                limits, localtime, net, openrouter, opreceipts, providers,
                sandbox as sbx, store,
                tokens, turnlog, turnusage, warmpool)
@@ -60,16 +60,6 @@ def kiosk_cfg(org: Org) -> KioskCfg | None:
     (user ruling): limits bind whether or not the public URL is currently
     enabled — `enabled` only gates the token gateway."""
     return org.d.get("kiosk") or None
-
-
-def _deployment_org_gate(org: Org) -> None:
-    """Refuse every agent execution path that cannot prove sandboxing."""
-    if deployment.current_policy().require_sandboxed_orgs \
-            and not sbx.is_sandboxed(org):
-        raise RuntimeError(
-            "the frozen deployment profile refuses to run an unsandboxed "
-            f"org ({org.d.get('slug') or '<unknown>'}); recreate the org with "
-            "sandbox enabled before enabling frozen mode")
 
 
 _ws_usage_cache: dict[str, tuple[float, int]] = {}
@@ -5976,8 +5966,7 @@ def _org_state_parts(org: Org, nid: str,
             f"next message that you did and why. If it does still stand, "
             f"leave it alone — do not re-ask, that only replaces it.")
     live_guidance = _claudemd_caveat(org, nid).strip()
-    if deployment.current_policy().allow_agent_restart \
-            and n["parent"] is not None and org._has_audience(nid, USER):
+    if n["parent"] is not None and org._has_audience(nid, USER):
         # The full unprompted-deploy doctrine remains in a top-level agent's
         # stable identity. A deep audience holder gains the same authority
         # dynamically, so state that trigger here without putting the live
@@ -6887,8 +6876,7 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
            "instead of planning to retry later — see both tool cards for the "
            "mechanics (detached spawn, refusal/naming, arming, liveness "
            "check, reason requirement). "
-           if deployment.current_policy().allow_agent_restart
-           and n["parent"] is None
+           if n["parent"] is None
            else "")
         + f"AUTHENTIC-CHANNEL NOTE: "
         f"the orgtree harness may deliver real mail mid-task — from the user or "
@@ -7856,14 +7844,7 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
     # runs inside the org's container; paths below become container paths and
     # the orgtree tools reach the host only via the secret-gated bridge
     sandboxed = sbx.is_sandboxed(org)
-    # Compute once so the CLI proxy, MCP child and steering hook all carry the
-    # same org credential generation. Frozen mode rotates this host-rooted
-    # bearer; standard mode keeps the existing org secret for migration.
-    # This is deliberately NOT node isolation: sandbox siblings share one
-    # root-capable container and are mutually trusted at this boundary.
-    bridge_credential = sbx.bridge_credential(org) if sandboxed else ""
-    frozen_bridge = (sandboxed
-                     and not sbx.legacy_bridge_credentials_allowed())
+    bridge_secret = sbx.sandbox_secret(org) if sandboxed else ""
     # isolation by default: the user's global hooks must not leak into agents.
     # The PostToolUse steering hook (mid-task mail delivery, 3f42476) needs a
     # CLI that fires TOOL hooks headless — <= 2.1.31 does not (live-tested).
@@ -7903,8 +7884,7 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
         # bearer's hook used to resolve as its successor and eat its mail
         settings: dict = _steer_settings(
             "python3 /opt/orgtree-backend/orgtree/steer.py "
-            f'"{slug}" "{nid}"'
-            + (f' "{bridge_credential}"' if frozen_bridge else ""))
+            f'"{slug}" "{nid}"')
     elif steer_capable and os.environ.get("ORGTREE_STEER_HOOK") != "0":
         steer_py = os.path.join(BACKEND_DIR, "orgtree", "steer.py")
         settings = _steer_settings(
@@ -8019,8 +7999,7 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
         if deny:
             settings["permissions"] = {"deny": deny}
     head = ((sbx.exec_argv(sbx.container_name(slug),
-                           sbx.cpath_scratch(slug, nid),
-                           sbx.bridge_exec_env(org)) + ["claude"])
+                           sbx.cpath_scratch(slug, nid)) + ["claude"])
             if sandboxed else _claude_argv())
     # №29 still holds — the identity prompt regenerates every turn — but it
     # rides a FILE now, not argv (user order 2026-08-17). Windows CreateProcess
@@ -8111,9 +8090,7 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
             "args": ["/opt/orgtree-backend/orgtree/mcptool.py"],
             "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
                     "ORGTREE_BASE": sbx.bridge_url(),
-                    "ORGTREE_BRIDGE_SECRET": bridge_credential,
-                    deployment.PROFILE_ENV:
-                        deployment.current_policy().name},
+                    "ORGTREE_BRIDGE_SECRET": bridge_secret},
         }
     else:
         chosen = dict(grant)
@@ -8122,9 +8099,7 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
             "args": ["-m", "orgtree.mcptool"],
             "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
                     "ORGTREE_PORT": os.environ.get("ORGTREE_PORT", "7360"),
-                    "PYTHONPATH": BACKEND_DIR,
-                    deployment.PROFILE_ENV:
-                        deployment.current_policy().name},
+                    "PYTHONPATH": BACKEND_DIR},
         }
     # Do not force `alwaysLoad` here. In CLI 2.1.220 it blocks construction of
     # the first request until each MCP server connects (up to its timeout).
@@ -9564,10 +9539,6 @@ def _auto_wake_gates_clear(org: Org, nid: str) -> bool:
     if org.waking_mail(nid):
         return False
     if (org.d.get("delivering") or {}).get(nid):
-        return False
-    try:
-        _deployment_org_gate(org)
-    except RuntimeError:
         return False
     return True
 
@@ -13352,8 +13323,7 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # ORGTREE_NODE reached the server), so partial specs would
         # identity-confuse mcptool
         "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
-                "ORGTREE_PORT": port, "PYTHONPATH": BACKEND_DIR,
-                deployment.PROFILE_ENV: deployment.current_policy().name},
+                "ORGTREE_PORT": port, "PYTHONPATH": BACKEND_DIR},
     }
     # the ⚙-rights seam: every turn runs with the CLI's own prompts
     # switched off (headless print mode cannot answer them — it auto-denies
@@ -14360,7 +14330,6 @@ def _run_one_turn_recorded(slug: str, nid: str,
                       f"machine-wide cap being contended, not this node")
             with store.DOC_LOCK:
                 org = store.load_org(slug)
-                _deployment_org_gate(org)
                 if org.node(nid)["state"] != "live":
                     raise RuntimeError(f"{nid} is not live")
                 if org.d.get("spend_frozen"):
@@ -21434,7 +21403,6 @@ def immediate_command(slug: str, nid: str, text: str) -> bool:
     if word not in IMMEDIATE_CMDS:
         return False
     org = store.load_org(slug)
-    _deployment_org_gate(org)
     n = org.node(nid)
     sid = n["session_id"]
     model = claude_model_for(org, nid)   # the id THIS CLI knows (see above)
@@ -22671,11 +22639,6 @@ def launch_self_restart(
     `force=True` on its own is refused right here, so no later caller can turn
     the flag into a hard cut by passing it and nothing else.
     """
-    if not deployment.current_policy().allow_agent_restart:
-        raise RuntimeError(
-            "the frozen deployment profile disables agent-triggered "
-            "self-update and self-restart; deploy this installation through "
-            "an operator-controlled path")
     if target not in ("org", "mailhub", "both"):
         raise ValueError(f"unknown self-restart target {target!r}")
     hold_token = quiesced.get("hold_token") if quiesced else None
@@ -23086,11 +23049,6 @@ def arm_prime_restart(slug: str, nid: str, target: str,
     that reboots every few minutes would hold a deadline that never expires
     and the feature would silently do nothing on exactly the box that needs
     it most."""
-    if not deployment.current_policy().allow_agent_restart:
-        raise RuntimeError(
-            "the frozen deployment profile disables agent-triggered primed "
-            "restart; deploy this installation through an operator-controlled "
-            "path")
     if target not in ("org", "mailhub", "both"):
         raise ValueError(f"unknown self-restart target {target!r}")
     with _prime_lock:
@@ -23159,10 +23117,6 @@ def arm_prime_restart(slug: str, nid: str, target: str,
 def cancel_prime_restart(slug: str, nid: str) -> dict[str, Any]:
     """Disarm. A cancel with nothing armed is a benign no-op that SAYS it was
     a no-op — the caller is usually checking, not undoing."""
-    if not deployment.current_policy().allow_agent_restart:
-        raise RuntimeError(
-            "the frozen deployment profile disables agent-triggered primed "
-            "restart; manage deployment through an operator-controlled path")
     with _prime_lock:
         d = _prime_read()
         executing = d.get("executing")
@@ -23563,10 +23517,6 @@ def start_prime_restart_engine() -> None:
     registry; this loop only watches for the moment to spend it — which is
     what makes an armed prime survive this process dying and coming back."""
     global _prime_started
-    if not deployment.current_policy().allow_agent_restart:
-        # A prime left by an earlier standard-profile process stays durable
-        # but inert. Frozen mode must never spend it in the background.
-        return
     if _prime_started:
         return
     # An executing record belongs to the process that wrote it. Reaching this
