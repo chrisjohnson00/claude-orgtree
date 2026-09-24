@@ -253,7 +253,7 @@ class LifecycleFinalizeTests(unittest.TestCase):
 
         The kill is patched to return BEFORE the OS has reaped, which is the
         documented behaviour of the real one (`_wd_kill_tree` returns as soon
-        as taskkill/kill is issued) made deterministic rather than raced.
+        as the kill is issued) made deterministic rather than raced.
         """
         nid = "killed"
         proc = self._own(SLEEPER)

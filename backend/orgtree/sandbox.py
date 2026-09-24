@@ -493,9 +493,7 @@ def _heal_ownership(name: str) -> None:
 
 def _docker(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["docker", *args], capture_output=True, text=True,
-                          timeout=timeout,
-                          creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                                         if os.name == "nt" else 0))
+                          timeout=timeout)
 
 
 def docker_ok() -> bool:

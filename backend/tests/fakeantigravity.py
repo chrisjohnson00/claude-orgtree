@@ -179,8 +179,7 @@ def _ws_probe(add_dir, prompt):
            "plugin": read(".agents/plugins/orgtree/plugin.json", True),
            "mcp_config": read(".agents/plugins/orgtree/mcp_config.json", True),
            "hooks": read(".agents/hooks.json", True),
-           "wrapper_present": os.path.exists(os.path.join(
-               add_dir, ".agents", "orgtree-rights.cmd")) or os.path.exists(
+           "wrapper_present": os.path.exists(
                os.path.join(add_dir, ".agents", "orgtree-rights.sh"))}
     with open(probe, "w", encoding="utf-8") as f:
         json.dump(doc, f)

@@ -22,13 +22,11 @@ Codex CLI resolution mirrors the Claude pin (supervisor.CLAUDE): the env
 override wins, then a private npm pin under the data root, then PATH:
 
     ORGTREE_CODEX > <data>/codex/node_modules/@openai/codex-<platform>/
-                    vendor/<triple>/bin/codex[.exe]  (npm install --prefix
+                    vendor/<triple>/bin/codex  (npm install --prefix
                     <data>/codex @openai/codex)      > PATH `codex`
 
-The native platform binary is preferred over the `.bin/codex` npm shim for
-the same reason supervisor.py avoids `cmd /c` shims: a .CMD truncates argv at
-an embedded newline. Probing `--version` would survive that; a future turn
-argv would not, so the resolver learns the safe habit now.
+The native platform binary is preferred over the `.bin/codex` npm shim so a
+turn spawns the binary directly, with no wrapper between orgtree and codex.
 """
 
 from __future__ import annotations
@@ -238,9 +236,8 @@ def install_hint(provider: str) -> str:
         return ("npm install --prefix "
                 f"{os.path.join(_DATA, 'codex')} @openai/codex")
     if provider == "google":
-        return ("winget install Google.AntigravityCLI" if os.name == "nt"
-                else "curl -fsSL https://antigravity.google/cli/install.sh "
-                     "| bash")
+        return ("curl -fsSL https://antigravity.google/cli/install.sh "
+                "| bash")
     if provider == openrouter.PROVIDER_ID:
         # nothing to install: the "install" of an API-backed lane is a key
         return "add an OpenRouter API key in App settings → Providers"
@@ -475,7 +472,7 @@ def _codex_version(exe: str) -> str:
         probe = os.path.dirname(probe)
     try:
         r = subprocess.run([exe, "--version"], capture_output=True,
-                           text=True, timeout=15, creationflags=0)
+                           text=True, timeout=15)
         m = re.search(r"\d+\.\d+\.\d+", r.stdout or "")
         if m:
             return m.group(0)
@@ -848,8 +845,8 @@ def antigravity_tiers() -> list[TierInfo]:
 
 # ── antigravity CLI detection ──────────────────────────────────────────────
 # The Antigravity CLI is ONE native binary (`agy`, Go) with no npm package
-# and no shim: Google's installer (`winget install Google.AntigravityCLI`,
-# the curl script elsewhere) drops it at a fixed per-user location, which is
+# and no shim: Google's installer (the curl script) drops it at a fixed
+# per-user location, which is
 # the "pin" this resolver knows — there is nothing for orgtree to
 # `npm install --prefix` itself. Resolution mirrors the other lanes:
 #
@@ -857,14 +854,8 @@ def antigravity_tiers() -> list[TierInfo]:
 
 def _antigravity_install_path() -> str | None:
     """The installer's own drop location, if the binary is there:
-    %LOCALAPPDATA%\\agy\\bin\\agy.exe on Windows (measured 2026-09-02),
-    ~/.local/bin/agy elsewhere (the install.sh default)."""
-    if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser(
-            "~/AppData/Local")
-        p = os.path.join(base, "agy", "bin", "agy.exe")
-    else:
-        p = os.path.expanduser("~/.local/bin/agy")
+    ~/.local/bin/agy (the install.sh default)."""
+    p = os.path.expanduser("~/.local/bin/agy")
     return p if os.path.exists(p) else None
 
 
@@ -923,9 +914,7 @@ def _antigravity_version(exe: str) -> str:
     try:
         r = subprocess.run(antigravity_argv(exe) + ["--version"],
                            capture_output=True, text=True, timeout=15,
-                           stdin=subprocess.DEVNULL, env=antigravity_env(),
-                           creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                                          if os.name == "nt" else 0))
+                           stdin=subprocess.DEVNULL, env=antigravity_env())
         m = re.search(r"\d+\.\d+\.\d+", r.stdout or "")
         if m:
             return m.group(0)
@@ -974,9 +963,7 @@ def _antigravity_account(exe: str) -> dict[str, Any]:
         r = subprocess.run(
             antigravity_argv(exe) + ["--log-file", log_path, "models"],
             capture_output=True, text=True, timeout=45, cwd=log_dir,
-            stdin=subprocess.DEVNULL, env=antigravity_env(),
-            creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                           if os.name == "nt" else 0))
+            stdin=subprocess.DEVNULL, env=antigravity_env())
     except (OSError, subprocess.TimeoutExpired):
         return out
     models: list[str] = []

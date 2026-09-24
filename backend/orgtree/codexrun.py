@@ -422,9 +422,8 @@ class AppServerClient:
                  env_extra: dict[str, str] | None = None,
                  config_overrides: list[str] | None = None) -> None:
         # an ARGV HEAD, not a bare exe — the same shape as supervisor's
-        # _claude_argv(): production passes [codex.exe], tests pass
-        # [python, fakecodex.py], and nobody ever routes through a .CMD shim
-        # (the argv-truncation hazard the claude resolver documents).
+        # _claude_argv(): production passes [codex], tests pass
+        # [python, fakecodex.py].
         env = dict(os.environ)
         # the claude lane's hygiene, mirrored: a codex child must never see
         # Anthropic credentials (one-credential-per-spawn, supervisor
@@ -448,8 +447,6 @@ class AppServerClient:
             argv_head + list(config_overrides or []) + ["app-server"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd,
-            creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                           if os.name == "nt" else 0),
             # own process group: `close()` kills the whole tree (app-server
             # forks a native engine + code-mode-host child) via killpg, not
             # just this pid — a bare kill() orphans them (2026-08-30 lock bug)

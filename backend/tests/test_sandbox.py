@@ -1268,18 +1268,6 @@ if section("§5  the soft cap, the hard cap, the recovery browser"):
         assert supervisor.storage_check(o.d["slug"]) is None
         drop(o.d["slug"])
 
-    @t("☠ icacls write-blocking is never aimed at an ext4-over-WSL org")
-    def _():
-        calls = []
-        real = subprocess.run
-        subprocess.run = lambda *a, **k: calls.append(a) or real(*a, **k)
-        try:
-            supervisor._org_write_acl(store.load_org(S5), True)
-        finally:
-            subprocess.run = real
-        assert not calls, "icacls cannot reach the disk — it would only ACL a "\
-                          "host dir the org no longer uses"
-
     dsk.usage = _real_usage
 
 # ================================================================== §6
@@ -1446,8 +1434,8 @@ if section("§6  the sandboxed turn"):
 
     # ---- the MCP escape hatch
     REG = {"weather": {"url": "http://localhost:9099/mcp"},
-           "fs": {"command": "cmd", "args": ["/c", "npx", "-y", "@x/fs"]},
-           "native": {"command": "C:\\tools\\thing.exe", "args": []},
+           "fs": {"command": "/usr/bin/npx", "args": ["-y", "@x/fs"]},
+           "native": {"command": "/opt/tools/thing", "args": []},
            "py": {"command": "python3", "args": ["-m", "srv"]}}
 
     @t("☠ by default a sandbox gets NOTHING from the MCP registry")

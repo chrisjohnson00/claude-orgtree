@@ -74,6 +74,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import fcntl
 import hashlib
 import json
 import os
@@ -296,21 +297,10 @@ def owner_file(root: str | None = None) -> str:
 
 
 def _try_lock(fd: int) -> bool:
-    """Exclusive, non-blocking, on BYTE 0. False = someone else holds it.
-
-    ⚠ `msvcrt.locking` locks a range starting at the file's CURRENT position,
-    so the seek is part of the contract, not tidiness: locking at EOF would
-    give two processes two different byte ranges and mutual exclusion would
-    silently not hold. Hence a raw fd (position 0 after `os.open`) rather than
-    a text handle opened `"a+"` (position EOF)."""
+    """Exclusive, non-blocking `flock` on the whole file. False = someone else
+    holds it."""
     try:
-        os.lseek(fd, 0, os.SEEK_SET)
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return True
     except OSError:
         return False
@@ -418,13 +408,7 @@ def release_data_root() -> None:
     if fd is None:
         return
     try:
-        os.lseek(fd, 0, os.SEEK_SET)
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_UN)
+        fcntl.flock(fd, fcntl.LOCK_UN)
     except OSError:
         pass
     try:

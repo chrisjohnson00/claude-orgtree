@@ -44,7 +44,6 @@ key.
 from __future__ import annotations
 
 import datetime as _dtm
-import os
 import re
 import subprocess
 import threading
@@ -94,10 +93,8 @@ def validate_sha(ref: Any) -> str:
 
 
 def _default_runner(argv: list[str]) -> tuple[int, str]:
-    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0  # type: ignore[attr-defined]
     r = subprocess.run(["git", *argv], cwd=sbx.REPO_ROOT, capture_output=True,
-                       text=True, timeout=GIT_TIMEOUT_S, shell=False,
-                       creationflags=flags)
+                       text=True, timeout=GIT_TIMEOUT_S, shell=False)
     return r.returncode, r.stdout.strip()
 
 
