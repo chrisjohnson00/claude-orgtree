@@ -2651,9 +2651,9 @@ def port_free(p: int, tries: int = 100) -> None:
         f"the deployment uses the operator ports 7360-7362.\n"
         # ⚠ THE CAUSE LINE IS BRANCHED, and it used to name only one cause —
         # "an earlier run was KILLED, orphaning its backend". That stopped
-        # being the usual cause once the rig's lifetime was tied to this
-        # process (D-170), and on 2026-09-05 the REAL cause was a concurrent run of
-        # this same suite on the same fixed port. A guard that names the wrong
+        # being the usual cause once the test runner began killing a timed-out
+        # suite's whole process group (D-170), and on 2026-09-05 the REAL cause
+        # was a concurrent run of this same suite on the same fixed port. A guard that names the wrong
         # cause sends the reader to the wrong place just as surely as no guard
         # at all — three readers took the last one for 23 broken behaviours.
         + (f"    usual cause: ANOTHER RUN OF THIS SUITE is live on the same "
