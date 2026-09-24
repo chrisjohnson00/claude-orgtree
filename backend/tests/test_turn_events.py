@@ -1501,6 +1501,9 @@ def _run_tool(args: list[str], prelude: str = "") -> subprocess.CompletedProcess
     env = dict(os.environ)
     env.pop("ORGTREE_DATA", None)
     env["PYTHONIOENCODING"] = "utf-8"
+    # cwd is the repo root (below), so `orgtree` needs its package dir on the
+    # path explicitly — this subprocess does not inherit the runner's sys.path
+    env["PYTHONPATH"] = os.path.abspath(os.path.join(HERE, ".."))
     return subprocess.run([sys.executable, "-c", code], capture_output=True,
                           text=True, encoding="utf-8", timeout=60,
                           cwd=os.path.join(HERE, "..", ".."), env=env)

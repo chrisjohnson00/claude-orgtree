@@ -4774,15 +4774,21 @@ class Org:
                  f'directly.' if retained else "")
         aud_b = (f' "{a}" keeps a standing audience with you.'
                  if retained else "")
-        nested = bool(p_a == p_b)
+        # p_a == p_b: a and b were direct-report SIBLINGS, so their parent
+        # and peer audiences are identical and need only one notification
+        # pass. This is distinct from `nested` (is_ancestor(a, b), :4595),
+        # which one commit's local shadowed — collapsing both concepts onto
+        # one name broke the notify split below and the returned/logged
+        # "nested" (seat-topology §1).
+        same_parent = bool(p_a == p_b)
 
         def _swap(role: str, node: str, *, reports_to: str | None = None,
                   grant_after: str | None = None, note: str | None = None) -> dict[str, Any]:
             return _mint("lifecycle.seat_swapped", actor_of(actor), self.node_ref(node),
-                         a=a, b=b, role=role, nested=nested, by=actor,
+                         a=a, b=b, role=role, nested=same_parent, by=actor,
                          reports_to_after=reports_to, grant_after=grant_after,
                          audience_note=(note or None))
-        if nested:
+        if same_parent:
             self._notify_ev([p for p in [p_a] if p != actor], _swap("parent_of_a", a))
             self._notify_ev([p for p in prior_peers_a if p != actor and p != b],
                             _swap("peer_of_a", a))

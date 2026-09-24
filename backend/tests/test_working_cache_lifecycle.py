@@ -208,7 +208,7 @@ def disposable_fork_is_accounted_and_reaped():
                                   "total_cost_usd": 0.125}) + "\n", "")
 
     saved = (S.transcript_path, S._build_cmd, S.spawn_env,
-             S.subprocess.Popen, S._leash, S.scratch_dir)
+             S.subprocess.Popen, S._leash, S.scratch_dir, S._cli_version_cache)
     try:
         S.transcript_path = lambda sid, root=None: (
             fork_file if sid == "fork-session" else "existing.jsonl")
@@ -221,10 +221,14 @@ def disposable_fork_is_accounted_and_reaped():
         S.subprocess.Popen = Proc
         S._leash = lambda proc: None
         S.scratch_dir = lambda slug, nid: ROOT
+        # this machine's native Claude installer has no package.json, so
+        # cli_version() would fall back to a subprocess probe — straight
+        # into the fake Popen above, which is shaped for the real spawn only
+        S._cli_version_cache = ("", S.time.time(), "2.1.220")
         S._working_cache_read(org.d["slug"], "agent")
     finally:
         (S.transcript_path, S._build_cmd, S.spawn_env,
-         S.subprocess.Popen, S._leash, S.scratch_dir) = saved
+         S.subprocess.Popen, S._leash, S.scratch_dir, S._cli_version_cache) = saved
 
     assert seen["cmd"][-3:] == ["--fork-session", "--max-turns", "1"], \
         seen["cmd"]
@@ -282,7 +286,7 @@ def tool_use_is_locally_denied_without_hiding_tools():
             return json.dumps(tool) + "\n" + json.dumps(result) + "\n", ""
 
     saved = (S.transcript_path, S._build_cmd, S.spawn_env,
-             S.subprocess.Popen, S._leash, S.scratch_dir)
+             S.subprocess.Popen, S._leash, S.scratch_dir, S._cli_version_cache)
     try:
         S.transcript_path = lambda sid, root=None: (
             fork_file if sid == "fork-deny" else "existing.jsonl")
@@ -294,10 +298,13 @@ def tool_use_is_locally_denied_without_hiding_tools():
         S.subprocess.Popen = Proc
         S._leash = lambda proc: None
         S.scratch_dir = lambda slug, nid: ROOT
+        # see disposable_fork_is_accounted_and_reaped: keeps cli_version()
+        # off the fake Popen above.
+        S._cli_version_cache = ("", S.time.time(), "2.1.220")
         S._working_cache_read(org.d["slug"], "agent")
     finally:
         (S.transcript_path, S._build_cmd, S.spawn_env,
-         S.subprocess.Popen, S._leash, S.scratch_dir) = saved
+         S.subprocess.Popen, S._leash, S.scratch_dir, S._cli_version_cache) = saved
 
     cmd = seen["cmd"]
     settings = settings_of(cmd)
@@ -350,7 +357,7 @@ def real_turn_cancels_child_before_resuming_session():
 
     saved = (S.transcript_path, S._build_cmd, S.spawn_env,
              S.subprocess.Popen, S._leash, S.scratch_dir, S._wd_kill_tree,
-             S._hold_for_deploy, S._run_one_turn)
+             S._hold_for_deploy, S._run_one_turn, S._cli_version_cache)
     try:
         S.transcript_path = lambda sid, root=None: "existing.jsonl"
         S._build_cmd = lambda o, n: [
@@ -361,8 +368,11 @@ def real_turn_cancels_child_before_resuming_session():
         S.scratch_dir = lambda s, n: ROOT
         S._wd_kill_tree = lambda proc: (proc.kill(), proc.wait(timeout=1))
         S._hold_for_deploy = lambda s, n: None
+        # see disposable_fork_is_accounted_and_reaped: keeps cli_version()
+        # off the fake Popen above.
+        S._cli_version_cache = ("", S.time.time(), "2.1.220")
 
-        def real_turn(s, n, text):
+        def real_turn(s, n, text, *, probe_token=None):
             assert killed.is_set(), "real resume overlapped cache child"
             real_ran.append(text)
             return None
@@ -378,7 +388,7 @@ def real_turn_cancels_child_before_resuming_session():
     finally:
         (S.transcript_path, S._build_cmd, S.spawn_env,
          S.subprocess.Popen, S._leash, S.scratch_dir, S._wd_kill_tree,
-         S._hold_for_deploy, S._run_one_turn) = saved
+         S._hold_for_deploy, S._run_one_turn, S._cli_version_cache) = saved
         st = S.state(slug, "agent")
         with S._state_lock:
             st["busy"] = False
@@ -409,7 +419,7 @@ def cancellation_closes_the_check_to_popen_window():
 
     saved = (S.transcript_path, S._working_cache_cmd, S.spawn_env,
              S.subprocess.Popen, S.scratch_dir, S._hold_for_deploy,
-             S._run_one_turn)
+             S._run_one_turn, S._cli_version_cache)
     worker = None
     try:
         S.transcript_path = lambda sid, root=None: "existing.jsonl"
@@ -418,7 +428,12 @@ def cancellation_closes_the_check_to_popen_window():
         S.subprocess.Popen = ForbiddenProc
         S.scratch_dir = lambda s, n: ROOT
         S._hold_for_deploy = lambda s, n: None
-        S._run_one_turn = lambda s, n, text: (real_ran.append(text), None)[1]
+        S._run_one_turn = lambda s, n, text, *, probe_token=None: (
+            real_ran.append(text), None)[1]
+        # _cache_snapshot's own _build_cmd call reaches cli_capable() before
+        # the reservation check below — same fake-Popen hazard as
+        # disposable_fork_is_accounted_and_reaped, just from a second call site.
+        S._cli_version_cache = ("", S.time.time(), "2.1.220")
 
         S._launch_working_cache_read(slug, "agent")
         assert building.wait(3), "maintenance did not enter pre-spawn setup"
@@ -439,7 +454,7 @@ def cancellation_closes_the_check_to_popen_window():
             worker.join(3)
         (S.transcript_path, S._working_cache_cmd, S.spawn_env,
          S.subprocess.Popen, S.scratch_dir, S._hold_for_deploy,
-         S._run_one_turn) = saved
+         S._run_one_turn, S._cli_version_cache) = saved
         st = S.state(slug, "agent")
         with S._state_lock:
             st["busy"] = False
@@ -489,7 +504,8 @@ def timeout_reaps_partial_fork_banks_cost_and_backs_off():
             return self.returncode
 
     saved = (S.transcript_path, S._build_cmd, S.spawn_env,
-             S.subprocess.Popen, S._leash, S.scratch_dir, S._wd_kill_tree)
+             S.subprocess.Popen, S._leash, S.scratch_dir, S._wd_kill_tree,
+             S._cli_version_cache)
     try:
         S.transcript_path = lambda sid, root=None: (
             fork_file if sid == "fork-timeout" else "existing.jsonl")
@@ -500,6 +516,9 @@ def timeout_reaps_partial_fork_banks_cost_and_backs_off():
         S._leash = lambda proc: None
         S.scratch_dir = lambda s, n: ROOT
         S._wd_kill_tree = lambda proc: (proc.kill(), proc.wait(timeout=1))
+        # see disposable_fork_is_accounted_and_reaped: keeps cli_version()
+        # off the fake Popen above.
+        S._cli_version_cache = ("", S.time.time(), "2.1.220")
         S._working_cache_read(slug, "agent")
         failures, retry_at = S._working_cache_retry[(slug, "agent")]
         assert failures == 1
@@ -513,7 +532,8 @@ def timeout_reaps_partial_fork_banks_cost_and_backs_off():
         assert (slug, "agent") in calls, calls
     finally:
         (S.transcript_path, S._build_cmd, S.spawn_env,
-         S.subprocess.Popen, S._leash, S.scratch_dir, S._wd_kill_tree) = saved
+         S.subprocess.Popen, S._leash, S.scratch_dir, S._wd_kill_tree,
+         S._cli_version_cache) = saved
         S._working_cache_clear_failure(slug, "agent")
 
     assert not os.path.exists(fork_file), "partial timeout fork survived"

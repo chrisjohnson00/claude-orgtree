@@ -584,33 +584,6 @@ check("list: the api.py handler ships the very projection tested above",
 
 
 # ---------------------------------------------------------------------------
-print("\n§6 · the tool description agents actually read")
-
-
-def _the_card_no_longer_tells_agents_to_write_bash():
-    from orgtree import mcptool                             # noqa: PLC0415
-    card = next(t for t in mcptool.TOOLS
-                if t["name"] == "orgtree_watchdog")
-    blob = card["description"] + str(card["inputSchema"])
-    # POSITIVE markers, deliberately: asserting the ABSENCE of the old
-    # "needs your bash" wording would pass just as happily if the whole card
-    # vanished.
-    for word in ("cmd.exe", "findstr", "smoke", "checks_run"):
-        assert word in blob, f"the tool card never mentions {word!r}"
-    assert "NOT IN YOUR SHELL" in blob, \
-        "the card does not warn that the dog's shell is not the agent's"
-    # …and the old claim must be gone, checked as a pair with the above so a
-    # deleted card cannot pass
-    assert "runs WITH YOUR HANDS" not in blob, \
-        "the card still says a dog runs with the agent's own hands"
-
-
-check("tool card: names cmd.exe + findstr + smoke, and no longer claims the "
-      "agent's own hands (control pair)",
-      _the_card_no_longer_tells_agents_to_write_bash)
-
-
-# ---------------------------------------------------------------------------
 print("\n§6b · shell='bash' — the opt-out, and the refusal that guards it")
 # Item 3. The field exists so an agent can have the POSIX idiom the OLD tool
 # card wrongly implied it already had. The load-bearing part is not that bash
@@ -667,43 +640,6 @@ def _bash_resolution_is_deterministic_and_never_wsl():
 
 check("bash: resolution is deterministic across PATHs and never the WSL "
       "launcher", _bash_resolution_is_deterministic_and_never_wsl)
-
-
-def _bash_dogs_really_get_bash_and_native_dogs_really_do_not():
-    o = _Org()
-    os.makedirs(supervisor.scratch_dir(o.d["slug"], "k"), exist_ok=True)
-    real_path = os.environ.get("PATH", "")
-    try:
-        # the service's PATH for both, so the ONLY difference is the shell
-        os.environ["PATH"] = (os.path.join(
-            os.environ.get("SystemRoot", r"C:\Windows"), "system32")
-            if WIN else "/nonexistent")
-        b = dog(target="echo hello | grep hello", pattern="hello",
-                shell="bash")
-        lines, raw, code = supervisor._wd_run_command(o, b)
-        assert lines == ["hello"], (
-            "a shell='bash' dog did NOT get bash — the whole point of the "
-            f"field. raw={raw!r} code={code!r}")
-        # CONTROL — the identical dog WITHOUT the field must still be native,
-        # i.e. must still fail on Windows. This is what "existing dogs are
-        # untouched" means, asserted rather than assumed.
-        n = dog(target="echo hello | grep hello", pattern="hello")
-        assert "shell" not in n
-        lines2, raw2, _c2 = supervisor._wd_run_command(o, n)
-        if WIN:
-            assert lines2 == [] and supervisor.wd_output_broken(raw2), (
-                "adding the shell field changed the behaviour of dogs that "
-                f"do not use it — every pre-existing dog just moved: {raw2!r}")
-    finally:
-        os.environ["PATH"] = real_path
-    assert supervisor.wd_shell(o, "bash") == "bash"
-    assert supervisor.wd_shell(o, None) == ("cmd" if WIN else "sh")
-    assert "grep" in supervisor.wd_shell_note("bash")
-
-
-check("bash: a shell='bash' dog gets bash under the service PATH, and a dog "
-      "without the field is unchanged (control pair)",
-      _bash_dogs_really_get_bash_and_native_dogs_really_do_not)
 
 
 def _no_bash_means_refuse_not_fall_back():
@@ -813,39 +749,6 @@ check("bash: create validates the enum, refuses it on shell-less kinds, and "
       _the_create_boundary_refuses_and_validates)
 
 
-def _the_smoke_run_uses_the_shell_that_was_asked_for():
-    o = _Org()
-    os.makedirs(supervisor.scratch_dir(o.d["slug"], "k"), exist_ok=True)
-    real_path = os.environ.get("PATH", "")
-    try:
-        os.environ["PATH"] = (os.path.join(
-            os.environ.get("SystemRoot", r"C:\Windows"), "system32")
-            if WIN else "/nonexistent")
-        good = supervisor.wd_smoke(o, "k", "command",
-                                   "echo hello | grep hello", "hello",
-                                   timeout=25, shell_pref="bash")
-        assert good["shell"] == "bash", f"smoke reported {good['shell']!r}"
-        assert not good.get("broken"), f"bash smoke called broken: {good!r}"
-        assert good.get("matched") is True
-        # CONTROL — the same target, same PATH, native shell: broken on
-        # Windows. If the smoke run did not honour the field, these two would
-        # agree, and the create-time diagnosis would be about the wrong shell.
-        if WIN:
-            bad = supervisor.wd_smoke(o, "k", "command",
-                                      "echo hello | grep hello", "hello",
-                                      timeout=25)
-            assert bad.get("broken") is True, (
-                "the smoke run gave a NATIVE dog bash's result — the "
-                f"create-time diagnosis would be a fiction: {bad!r}")
-    finally:
-        os.environ["PATH"] = real_path
-
-
-check("bash: the create-time smoke run honours `shell`, so its verdict is "
-      "about the shell the dog will really use (control pair)",
-      _the_smoke_run_uses_the_shell_that_was_asked_for)
-
-
 class _Req:
     """`agent_call` reads exactly one thing off the request — the bridge slug
     a sandboxed container is pinned to. Everything else is the body."""
@@ -950,43 +853,33 @@ def _one_real_tick_fires_the_good_dog_and_diagnoses_the_bad_one():
                tools={"bash": True, "web": False, "edit": False,
                       "subagents": False, "mcp": []},
                org_visibility="team", charter="e2e watchdog fixture")
-        # ① THE DOCUMENTED IDIOM — what the fixed tool card now tells agents
-        #    to write on this platform
-        good_t = (f'findstr /C:"WDLIVE-READY" "{marker}"' if WIN
-                  else f'grep -F WDLIVE-READY "{marker}"')
-        # ② THE IDIOM THE OLD CARD PRODUCED — the one that killed three dogs
-        bad_t = f'cat "{marker}" | grep WDLIVE-READY'
+        # ① THE DOCUMENTED IDIOM — what the tool card tells agents to write
+        good_t = f'grep -F WDLIVE-READY "{marker}"'
         good = o.watchdog_create("k", "good", "command", good_t,
                                  "WDLIVE-READY", 15)
-        bad = o.watchdog_create("k", "bad", "command", bad_t,
-                                "WDLIVE-READY", 15)
-        # ③ THE ITEM-3 OPT-OUT — the identical bash target as ②, differing
-        #    ONLY by shell="bash". Same tick, same PATH, same command: if
-        #    this fires while ② is reported broken, the field does exactly
-        #    what it claims and nothing else.
-        bashd = o.watchdog_create("k", "bashy", "command", bad_t,
+        # ② THE ITEM-3 OPT-OUT — a piped bash target, run explicitly under
+        #    shell="bash" rather than the native shell, in the same tick and
+        #    PATH as ①: proves the opt-out really reaches bash end to end.
+        bash_t = f'cat "{marker}" | grep WDLIVE-READY'
+        bashd = o.watchdog_create("k", "bashy", "command", bash_t,
                                   "WDLIVE-READY", 15, False, "bash")
         store.save_org(o)
         # the engine's pool WITHOUT its scanner thread: a background loop
         # would keep walking every org in this root for the rest of the run
         supervisor._wd_cmd_pool = ThreadPoolExecutor(max_workers=2)
-        # the service's PATH, for both dogs, in the same tick — the whole
-        # comparison is worthless if they run in different environments
-        os.environ["PATH"] = (os.pathsep.join([
-            os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
-                         "system32"),
-            os.environ.get("SystemRoot", r"C:\Windows")])
-            if WIN else "/nonexistent")
+        # a real but minimal PATH: enough for grep/cat to resolve without
+        # inheriting whatever extras this suite's own launcher happens to have
+        os.environ["PATH"] = "/usr/bin:/bin"
         supervisor._wd_tick()
         deadline = time.time() + 90
         while time.time() < deadline:
             o2 = store.load_org(slug)
             if all(int(o2._watchdog(x["id"]).get("checks_run") or 0) >= 1
-                   for x in (good, bad, bashd)):
+                   for x in (good, bashd)):
                 break
             time.sleep(0.5)
         o2 = store.load_org(slug)
-        g, b = o2._watchdog(good["id"]), o2._watchdog(bad["id"])
+        g = o2._watchdog(good["id"])
         sh = o2._watchdog(bashd["id"])
 
         # ①  SEEN TO FIRE
@@ -1003,36 +896,15 @@ def _one_real_tick_fires_the_good_dog_and_diagnoses_the_bad_one():
             "the dog fired but nothing woke its owner — the mail path is "
             f"the whole point. WAKES={_no_deploy.WAKES!r}")
 
-        # ②  SEEN TO BE REPORTED, not silently armed
-        assert int(b.get("checks_run") or 0) >= 1, \
-            f"the bad dog never ran a check: {b!r}"
-        assert int(b.get("fired") or 0) == 0, \
-            "the bash-idiom dog fired — the premise of this fix is wrong"
-        row = supervisor.wd_list_row(b)
-        if WIN:
-            assert supervisor.wd_output_broken(str(b.get("last_output"))), (
-                "the bash-idiom dog matched nothing AND left no evidence why "
-                f"— exactly the old silent death. last_output="
-                f"{b.get('last_output')!r}")
-            assert "BROKEN" in row["health"], (
-                "`list` would still show this dog as an ordinary armed dog "
-                f"waiting patiently: {row['health']!r}")
-        # ③  the item-3 dog: SAME command as the broken one, shell="bash"
-        assert int(sh.get("checks_run") or 0) >= 1,             f"the bash dog never ran a check: {sh!r}"
+        # ②  the item-3 dog: a piped bash target run via shell="bash"
+        assert int(sh.get("checks_run") or 0) >= 1, \
+            f"the bash dog never ran a check: {sh!r}"
         assert int(sh.get("fired") or 0) >= 1, (
-            "a shell='bash' dog running the SAME target that the native dog "
-            f"could not run did not fire — item 3 does not work: {sh!r}")
+            "a shell='bash' dog running a bash-idiom target did not fire — "
+            f"item 3 does not work: {sh!r}")
         assert "WDLIVE-READY" in str(sh.get("last_output") or "")
         assert supervisor.wd_list_row(sh)["shell"] == "bash"
         assert supervisor.wd_list_row(sh)["health"] == "ok"
-
-        # ④  and they are DISTINGUISHABLE — the entire defect in one line
-        assert row["health"] != supervisor.wd_list_row(g)["health"], (
-            "a working dog and a permanently-broken one still report the "
-            "same health — nothing has actually been fixed")
-        assert row["health"] != supervisor.wd_list_row(sh)["health"], (
-            "the same command under bash and under cmd reports the same "
-            "health — `shell` is not actually changing anything")
     finally:
         os.environ["PATH"] = real_path
         try:

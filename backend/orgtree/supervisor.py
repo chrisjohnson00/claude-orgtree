@@ -12856,8 +12856,9 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             target=_steer_pump, daemon=True,
             name=f"codexsteer-{slug}-{nid}")
         steer_thread.start()
-        res_raw = turn.wait(timeout=TURN_TIMEOUT,
-                            close_client=wp_turn is None)
+        # Closing happens below, after the steer pump has actually left
+        # (join) — closing here would race its last poll for a late reply.
+        res_raw = turn.wait(timeout=TURN_TIMEOUT, close_client=False)
     finally:
         # Leg-local cleanup only; `_run_one_turn` still owns the shared queue
         # and busy-state boundary. A clean warm claimant detaches its callbacks
@@ -12970,8 +12971,11 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                     _td_discard = reason
                     warmpool.discard(wp_turn, reason)
             else:
-                # `wait` normally closed the cold client; this also covers a
-                # start/initialize exception before wait was reached.
+                # Only reached after `steer_thread.join()` above, so this can
+                # no longer race the pump's last poll for a late reply (the
+                # bug `close_client=False` on `wait()` exists to fix) — and
+                # still inside the `finally` this whole block already is, so
+                # a raise here does not skip the teardown below (D2).
                 turn.client.close()
         finally:
             # ⚠ ON EVERY EXIT: the teardown above is the same "can each raise"
@@ -25115,6 +25119,9 @@ _WD_SHELL_ERRORS = (
     "command not found",
     "no such file or directory",
 )
+# dash (Linux's /bin/sh) skips the word "command": "/bin/sh: 1: X: not
+# found". Caught separately because it is a shape, not a fixed phrase.
+_WD_SHELL_ERROR_RE = re.compile(r"^\S*sh: \d+: .+: not found$", re.MULTILINE)
 
 
 def wd_output_broken(out: str) -> str | None:
@@ -25126,7 +25133,11 @@ def wd_output_broken(out: str) -> str | None:
     too), "is not recognized" is not. Team charter §3: prefer positive
     markers over asserted absences."""
     low = (out or "").lower()
-    return next((s for s in _WD_SHELL_ERRORS if s in low), None)
+    hit = next((s for s in _WD_SHELL_ERRORS if s in low), None)
+    if hit:
+        return hit
+    m = _WD_SHELL_ERROR_RE.search(out or "")
+    return m.group(0) if m else None
 
 
 def _wd_age_s(stamp: Any) -> float | None:
