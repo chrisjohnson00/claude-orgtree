@@ -4954,7 +4954,8 @@ def sandbox_mcp_passthrough(granted: list[str],
     """The granted servers a SANDBOXED turn may receive. Empty unless
     ORGTREE_SANDBOX_MCP is set; then: URL servers with localhost rewritten to
     the container's host alias, and stdio servers whose command is portable
-    enough to attempt in-container (npx/node/python/uv). Experimental — no guarantee a given server runs."""
+    enough to attempt in-container (npx/node/python/uv). Experimental — no
+    guarantee a given server runs."""
     if not sandbox_mcp_enabled():
         return {}
     out = {}
