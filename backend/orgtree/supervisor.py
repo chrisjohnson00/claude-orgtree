@@ -11214,7 +11214,10 @@ def _codex_git_trust_env(sc: Mapping[str, Any]) -> dict[str, str]:
         # forward slashes: what git itself prints in its own "To add an
         # exception" hint on Windows, and what was measured to work
         g = p.replace("\\", "/")
-        if g.endswith("/") and not g.endswith(":/"):
+        # "/" itself must not strip down to "": an EMPTY safe.directory value
+        # is git's own convention for "reset the list" — it would silently
+        # wipe every entry built above it (measured with a root grant).
+        if g.endswith("/") and not g.endswith(":/") and g != "/":
             g = g[:-1]
         # the descendants pattern is built separately rather than by
         # appending "/*": a DRIVE-ROOT grant ("C:\") already ends in its
@@ -23686,11 +23689,13 @@ def _note_steer_attempt(slug: str, nid: str, toks: Iterable[str],
             hit = False
             for b in (org.d.get("delivering") or {}).get(nid) or []:
                 if b.get("tok") in drop:
-                    prev = b.get("attempt") if isinstance(b.get("attempt"), dict) else {}
-                    b["attempt"] = {"via": "steer", "outcome": str(outcome),
-                                    "at": now_iso(),
-                                    "n": int(prev.get("n") or 0) + 1,
-                                    "reason": str(reason or "")[:200]}
+                    # own key: the delivery envelope's own "attempt" (int
+                    # redrain count, :6983) shares this dict and collided here
+                    prev = b.get("steer_attempt") if isinstance(b.get("steer_attempt"), dict) else {}
+                    b["steer_attempt"] = {"via": "steer", "outcome": str(outcome),
+                                           "at": now_iso(),
+                                           "n": int(prev.get("n") or 0) + 1,
+                                           "reason": str(reason or "")[:200]}
                     hit = True
             if hit:
                 store.save_org(org)
@@ -26557,8 +26562,8 @@ def reconcile(slug: str) -> list[str]:
             # so the repeat is explained on the desk instead of silent.
             unk = sum(len(b.get("mail") or []) + len(b.get("notices") or [])
                       for b in batches
-                      if isinstance(b.get("attempt"), dict)
-                      and b["attempt"].get("outcome") == "unknown")
+                      if isinstance(b.get("steer_attempt"), dict)
+                      and b["steer_attempt"].get("outcome") == "unknown")
             if unk:
                 log = org.d.setdefault("steered_log", {}).setdefault(dnid, [])
                 log.append({

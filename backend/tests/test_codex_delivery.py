@@ -457,7 +457,7 @@ def main() -> int:
     # could arrive (the ack is ACK_DELAY away): a crash in this window must
     # leave a trace for the restart fold-back (review 2026-09-05)
     marked_before_ack = wait_for(
-        lambda: any((b.get("attempt") or {}).get("outcome") == "unknown"
+        lambda: any((b.get("steer_attempt") or {}).get("outcome") == "unknown"
                     for b in delivering(slug4, nid4)), min(ACK_DELAY - 0.3, 1.5))
     box4["thread"].join(timeout=ACK_DELAY + 90)
     owned4 = carriers_owned(slug4, nid4, box4)

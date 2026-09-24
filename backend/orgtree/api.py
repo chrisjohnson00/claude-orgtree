@@ -8052,8 +8052,12 @@ async def node_upload(slug: str, nid: str, request: Request,
         raise HTTPException(413, "the org is over its storage limit — uploads "
                                  "are paused until files are deleted (the "
                                  "block lifts automatically)")
+    # a browser on Windows still sends a "\"-separated name; os.path.basename
+    # only splits on "/" here (POSIX), so a bare backslash swap first keeps
+    # the upload from landing as one file named after its whole fake path
     safe = re.sub(r"[^\w .()+\-]", "_",
-                  os.path.basename(name or "upload.bin")).strip(" .") or "upload.bin"
+                  os.path.basename((name or "upload.bin").replace("\\", "/"))
+                  ).strip(" .") or "upload.bin"
     data = await request.body()
     if not data:
         raise HTTPException(422, "empty upload")
