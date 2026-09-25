@@ -252,8 +252,9 @@ def t_an_explicit_default_still_reaches_a_new_org() -> None:
 def t_this_machines_real_data_root_is_not_under_temp() -> None:
     """The floor is only safe if the operator's real install is on the other
     side of it. Read-only: this asks where the data root is, nothing else."""
-    real = os.environ.get("_ORGTREE_REAL_DATA") or os.path.expanduser(
-        "~/orgtree")
+    # tools/run_tests.py runs suites under a throwaway HOME in the temp dir
+    home = os.environ.get("ORGTREE_TEST_REAL_HOME") or os.path.expanduser("~")
+    real = os.environ.get("_ORGTREE_REAL_DATA") or os.path.join(home, "orgtree")
     assert not net._under_os_temp(real), (
         f"this machine's real data root {real!r} IS under the OS temp dir, so "
         f"the floor would cut the live install off from its hub. That install "

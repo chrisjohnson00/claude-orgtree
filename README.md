@@ -626,6 +626,14 @@ and sweep timing configurations in real elapsed time. Those are minutes each, so
 pre-release gate rather than a per-change one. Neither tier bills a model: every provider CLI is a fake. The one
 opt-in mode that needs a paid model, `test_message_visibility_live.py --real-cli`, is run by hand only.
 
+**Hermetic home.** The runner gives every suite a throwaway `HOME` and puts stub `claude` and `codex` executables
+first on `PATH`. The fake home holds a fixture Claude account (`~/.claude.json`) and a fake Codex API key
+(`~/.codex/auth.json`), with no real credentials. The stubs answer `--version` and fail loudly on any other call. Every
+machine therefore looks the same to the provider hire gates, signed-in dev box and bare CI runner alike, and no suite
+can reach your real CLI login. `ORGTREE_TEST_REAL_HOME` carries the real home so the live-data-root guards still refuse
+your real `~/orgtree`. Running a suite directly (`python backend/tests/test_x.py`) skips all of this and uses your real
+`HOME`.
+
 **How suites are found.** By glob — `backend/tests/test_*.py` plus `frontend/tests/run.mjs`. Adding a suite requires
 no edit to the runner: its flags, whether it starts a real listener (those run one at a time, after the parallel pool
 drains, so nothing races them), and whether it carries a drift guard are all read out of the suite's own source. The

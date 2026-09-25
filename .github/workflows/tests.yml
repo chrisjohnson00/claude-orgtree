@@ -38,14 +38,13 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 2026-07-20
 
-      # 3.11 is the floor the README declares. ⚠ Worth knowing: the dev box
-      # actually runs 3.10.11 and the whole fast tier passes there, so the
-      # declared floor and the measured floor disagree by one minor version.
-      # CI tests the declared contract; if you ever rely on a 3.11-only
-      # feature, CI will be happy and the dev box will not.
+      # 3.14 is what the dev box runs. ⚠ It is NOT the 3.11 floor the README
+      # declares, so CI does not test that floor: two suites' purity import
+      # hooks (failure-fixtures, turn-events) refuse the stdlib's own
+      # `threading` import on 3.11.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0 2026-07-20
         with:
-          python-version: '3.11'
+          python-version: '3.14'
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements.txt
 
@@ -64,6 +63,11 @@ jobs:
 
       - name: run_tests.py (fast tier)
         run: python tools/run_tests.py --logdir testlogs
+        env:
+          # the frontend's 10 s default per test file is sized for the dev box;
+          # render.test's paging checks alone take ~3.5 s there and overran it
+          # on the shared runner
+          ORGTREE_TEST_TIMEOUT_MS: '30000'
 
       - name: suite logs
         if: always()
