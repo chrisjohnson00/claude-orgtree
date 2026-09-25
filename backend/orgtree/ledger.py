@@ -35,7 +35,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Final, Literal, cast
 
 from . import clipin, deployment, events, events_render, opreceipts
-from .schema import (AudienceGrant, DirGrant, FrozenInfo, MailEntry, NodeDoc,
+from .schema import (AudienceGrant, DirGrant, FrozenInfo, MailEntry, NodeDoc, NodeScope,
                      NoticeEntry, NoticeLogEntry, OrgDoc, OrgInboxEntry, ToolGrant,
                      UserMailEntry, WorkActor, WorkItem, WorkStage)
 
