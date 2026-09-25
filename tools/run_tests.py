@@ -67,6 +67,31 @@ variable out of the child environment (except the frontend runner's own
 `ORGTREE_TEST_*` knobs, none of which names a data root) so no suite can
 inherit a pointer at the real data directory, and never assigns a port itself.
 
+HERMETIC HOME
+-------------
+Every suite runs with `HOME` pointed at a throwaway directory and a stub `bin/`
+first on `PATH`, built once per run by `hermetic_home()`:
+
+  * `~/.claude.json` names a fixture account (`tests@example.invalid`) and
+    `~/.codex/auth.json` holds a fake API key — metadata only, no credential.
+  * `bin/claude` and `bin/codex` answer `--version` and exit 97 on anything
+    else, so a suite that reaches for a real CLI fails loudly instead of
+    billing a model. Suites that need a behaving CLI point `ORGTREE_CLAUDE*` /
+    `ORGTREE_CODEX` at their own fakes, as they always have.
+  * `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `XDG_CONFIG_HOME` are unset; git
+    identity comes from `GIT_AUTHOR_*` / `GIT_COMMITTER_*`; `PYTHONUSERBASE`
+    keeps the real user-site packages importable.
+  * `ORGTREE_TEST_REAL_HOME` names the real home, so live-root guards
+    (`_no_deploy.assert_isolated_data_root`) still refuse the operator's real
+    `~/orgtree`.
+  * `ORGTREE_TEST_STUB_BIN` names the stub directory, so a suite with a
+    real-CLI leg (`test_codex_mcp_approval.py`) skips it instead of failing
+    on the stub.
+
+So every machine — a signed-in dev box, a bare CI runner — presents the same
+host state to the provider hire gates, and a suite's result does not depend on
+who is logged in where it runs. A suite that sets its own `HOME` wins.
+
 DID IT FINISH? — the one question this runner used to be unable to answer
 -------------------------------------------------------------------------
 A run that is KILLED part-way is otherwise indistinguishable from a run that
@@ -109,9 +134,11 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import glob
+import json
 import os
 import re
 import shutil
+import site
 import subprocess
 import sys
 import tempfile
@@ -337,7 +364,63 @@ class Result:
                  "guard_state", "guard_lines", "truncated", "aborted")
 
 
-def child_env():
+#: `--version` answers so install probes see a CLI; anything else is a suite
+#: reaching for the real thing, which must fail loudly rather than bill a model.
+_STUB = """#!/bin/sh
+if [ "$1" = "--version" ]; then echo "{version}"; exit 0; fi
+echo "orgtree test stub: a suite tried to run the real {name} CLI ($*)" >&2
+exit 97
+"""
+
+
+def hermetic_home():
+    """A throwaway HOME and a stub `bin/` that make every suite see the same
+    machine: Claude and Codex installed and signed in, with fixture metadata
+    and no credentials. The hire gates (`provider_hire_gate`,
+    `tier_availability`) ask host-state questions — is the CLI on PATH, does
+    `~/.claude.json` name an account — and several suites answer them from a
+    uvicorn or MCP child that no in-process monkeypatch reaches, so the answer
+    has to live in the environment every suite inherits. Without this a suite
+    passes on a signed-in dev box and fails on a bare CI runner.
+
+    Returns `(root, overrides)`; `child_env` applies the overrides."""
+    root = tempfile.mkdtemp(prefix="orgtree-home-")
+    home = os.path.join(root, "home")
+    stubs = os.path.join(root, "bin")
+    os.makedirs(os.path.join(home, ".codex"))
+    os.makedirs(stubs)
+    with open(os.path.join(home, ".claude.json"), "w", encoding="utf-8") as fh:
+        json.dump({"oauthAccount": {
+            "accountUuid": "00000000-0000-4000-8000-000000000000",
+            "emailAddress": "tests@example.invalid"}}, fh)
+    with open(os.path.join(home, ".codex", "auth.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump({"OPENAI_API_KEY": "sk-test-hermetic-not-a-key"}, fh)
+    for name, version in (("claude", "2.1.0 (Claude Code)"),
+                          ("codex", "codex-cli 0.150.0")):
+        stub = os.path.join(stubs, name)
+        with open(stub, "w", encoding="utf-8") as fh:
+            fh.write(_STUB.format(name=name, version=version))
+        os.chmod(stub, 0o755)
+    overrides = {
+        "HOME": home,
+        "PATH": stubs + os.pathsep + os.environ.get("PATH", ""),
+        # user-site packages resolve from HOME; keep the real ones importable
+        "PYTHONUSERBASE": os.environ.get("PYTHONUSERBASE") or site.getuserbase(),
+        # ~/.gitconfig is gone, and suites that commit need an identity
+        "GIT_AUTHOR_NAME": "orgtree tests",
+        "GIT_AUTHOR_EMAIL": "tests@example.invalid",
+        "GIT_COMMITTER_NAME": "orgtree tests",
+        "GIT_COMMITTER_EMAIL": "tests@example.invalid",
+        # live-root guards still need to name the operator's real ~/orgtree
+        "ORGTREE_TEST_REAL_HOME": os.path.expanduser("~"),
+        # lets a suite with a real-CLI leg tell a stub from an install
+        "ORGTREE_TEST_STUB_BIN": stubs,
+    }
+    return root, overrides
+
+
+def child_env(hermetic=None):
     env = dict(os.environ)
     # no suite may inherit a pointer at the operator's real deployment.
     # ORGTREE_TEST_* is the one exemption: those are the frontend runner's own
@@ -349,6 +432,11 @@ def child_env():
     for k in [k for k in env
               if k.startswith("ORGTREE_") and not k.startswith("ORGTREE_TEST_")]:
         env.pop(k)
+    if hermetic:
+        # each of these would point a CLI back at the real config
+        for k in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"):
+            env.pop(k, None)
+        env.update(hermetic)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
     return env
@@ -414,11 +502,11 @@ def stopped_early(out):
     return not _SUMMARY.search(out[died:])
 
 
-def run_one(suite, cmd, timeout, logdir):
+def run_one(suite, cmd, timeout, logdir, env=None):
     r = Result()
     r.suite, r.checks, r.guard_lines = suite, None, []
     t0 = time.time()
-    proc = subprocess.Popen(cmd, cwd=suite.cwd, env=child_env(),
+    proc = subprocess.Popen(cmd, cwd=suite.cwd, env=env or child_env(),
                             stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, start_new_session=True)
     try:
@@ -673,6 +761,12 @@ def main():
         return 2
     print()
 
+    home_root, overrides = hermetic_home()
+    env = child_env(overrides)
+    print(f"  home    {overrides['HOME']}  (hermetic: stub CLIs, fixture "
+          f"sign-in)")
+    print()
+
     results = []
     t0 = time.time()
 
@@ -698,14 +792,15 @@ def main():
     # timing-sensitive suite is competing with anything for the CPU
     if par:
         with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-            futs = {pool.submit(run_one, s, s.cmd(args.full), timeout, logdir): s
+            futs = {pool.submit(run_one, s, s.cmd(args.full), timeout, logdir,
+                                env): s
                     for s in par}
             for f in concurrent.futures.as_completed(futs):
                 r = f.result()
                 results.append(r)
                 done(r)
     for s in exc:
-        r = run_one(s, s.cmd(args.full), timeout, logdir)
+        r = run_one(s, s.cmd(args.full), timeout, logdir, env)
         results.append(r)
         done(r)
 
@@ -818,6 +913,7 @@ def main():
     # telling those two apart is the entire point.
     rc = 1 if bad or blocked else 0
     emit_completion(logdir, len(run), results, bad, skipped, wall, rc)
+    shutil.rmtree(home_root, ignore_errors=True)
     return rc
 
 

@@ -666,6 +666,10 @@ def main() -> int:
     def _git_ok(repo, extra):
         env = {k: v for k, v in os.environ.items()
                if not k.startswith("GIT_CONFIG")}
+        # a system or global `safe.directory=*` (CI runner images ship one)
+        # would trust every repo and make the refusal checks pass for free
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_CONFIG_GLOBAL"] = os.devnull
         env["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1"
         env.update(extra)
         p = subprocess.run(["git", "-C", repo, "log", "-1", "--format=%H"],

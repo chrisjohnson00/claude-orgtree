@@ -747,15 +747,30 @@ def main() -> int:
         raise AssertionError(f"no refusal ({needle!r} expected)")
 
     def t8():
-        org = store.load_org(slug)
+        # Claude is gated too (D-199); pin it installed and signed in so
+        # every "fable" call below measures only that Codex state never
+        # leaks into the Claude branch
+        from orgtree import accounts
+        real_inst = supervisor.claude_install_state
+        real_ident = accounts.live_identity
+        supervisor.claude_install_state = lambda force=False: {
+            "installed": True, "path": "/x", "source": "path"}
+        accounts.live_identity = lambda: {"uuid": "u1", "email": "a@b"}
+        try:
+            _t8(store.load_org(slug))
+        finally:
+            supervisor.claude_install_state = real_inst
+            accounts.live_identity = real_ident
+
+    def _t8(org):
         provider_hire_gate(org, "sol")          # signed in: passes silently
-        provider_hire_gate(org, "fable")        # claude: never gated
+        provider_hire_gate(org, "fable")        # claude: not a codex gate
         provider_hire_gate(org, None)           # no tier: not this gate's job
         sign_in(False)
         try:
             expect_refusal(lambda: provider_hire_gate(org, "luna"),
                            "not signed in")
-            provider_hire_gate(org, "fable")    # claude still ungated
+            provider_hire_gate(org, "fable")    # codex sign-out: claude passes
         finally:
             sign_in(True)
         org.d["kiosk"] = {"pin": "x"}
@@ -767,7 +782,7 @@ def main() -> int:
         provider_hire_gate(org, "fable")
         org.d.pop("headless")
     check("gate: connected passes; signed-out, kiosk and headless-"
-          "subscription refuse, naming the remedy; claude ungated", t8)
+          "subscription refuse, naming the remedy; claude unaffected", t8)
 
     print("§8 the process-lifecycle record: whose liveness it describes, and "
           "clearing it on every exit the turn ends by")
