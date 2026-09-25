@@ -132,6 +132,7 @@ docstring.
 from __future__ import annotations
 
 import argparse
+import atexit
 import concurrent.futures
 import glob
 import json
@@ -762,6 +763,9 @@ def main():
     print()
 
     home_root, overrides = hermetic_home()
+    # atexit, not a trailing rmtree: a Ctrl-C or crash mid-run must not leave
+    # the fixture home behind in the temp dir
+    atexit.register(shutil.rmtree, home_root, ignore_errors=True)
     env = child_env(overrides)
     print(f"  home    {overrides['HOME']}  (hermetic: stub CLIs, fixture "
           f"sign-in)")
@@ -913,7 +917,6 @@ def main():
     # telling those two apart is the entire point.
     rc = 1 if bad or blocked else 0
     emit_completion(logdir, len(run), results, bad, skipped, wall, rc)
-    shutil.rmtree(home_root, ignore_errors=True)
     return rc
 
 
