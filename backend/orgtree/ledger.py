@@ -6933,7 +6933,7 @@ class Org:
     def node_ref(self, nid: str) -> dict[str, Any]:
         n = self.nodes.get(nid) or {}
         return {"kind": "node", "org": str(self.d.get("slug") or ""), "id": nid,
-                "name": str(n.get("name") or nid),
+                "name": str(n.get("title") or nid),
                 "generation": int(n.get("generation") or 0)}
 
     def work_item_ref(self, it: Mapping[str, Any]) -> dict[str, Any]:
