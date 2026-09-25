@@ -536,10 +536,12 @@ processes, per-container CPU/memory caps. The org workspace is the one
 deliberately mounted window; session transcripts persist in the agent home
 (`<data>/sandboxes/<slug>/home` on the host) so resume, chat views, and
 read-down keep working.
-The container reaches the backend only through a **bridge listener**
-(`ORGTREE_BRIDGE_PORT`, default 7362) gated by a per-org secret that exists
-nowhere but inside that container. Requires Docker Desktop running; the
-image builds automatically on first use (`sandbox/Dockerfile`).
+The container reaches the backend only through a **bridge listener** (`ORGTREE_BRIDGE_PORT`, default 7362) gated by
+a per-org secret that exists nowhere but inside that container. Containers reach the bridge at `host.docker.internal`
+(mapped to Docker's host gateway), so a host firewall must allow traffic from the docker0 bridge to that port.
+Requires the Docker Engine running (native Linux, `sudo systemctl start docker`); the image builds automatically on
+first use (`sandbox/Dockerfile`). The image's `agent` user is built with the backend's own uid and gid, so the agent
+and the backend can both write the bind-mounted home, workspace, and scratch.
 
 **Container storage.** The rootfs is read-only, `/tmp` is RAM (bounded by the
 memory cap), and `/usr/local` is a read-only version-pinned volume so the CLI

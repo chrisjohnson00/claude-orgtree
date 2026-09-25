@@ -1,7 +1,7 @@
 """Sandboxed orgs — the container execution mode, adversarially.
 
-    .venv/Scripts/python.exe backend/tests/test_sandbox.py            hermetic
-    .venv/Scripts/python.exe backend/tests/test_sandbox.py --docker   + real Docker
+    .venv/bin/python backend/tests/test_sandbox.py            hermetic
+    .venv/bin/python backend/tests/test_sandbox.py --docker   + real Docker
 
 No pytest (it is not installed here). Plain asserts, `ok N` lines, one final
 `ALL N CHECKS PASS`.
@@ -395,7 +395,12 @@ if section("§2  the container contract"):
     FD = FakeDocker()
     sandbox._docker = FD
     supervisor.cli_version = lambda: "2.1.220"
-    TAG = f"orgtree-sandbox:2.1.220-{sandbox.IMG_REV}"
+
+    def tag_for(ver, ids=None):
+        uid, gid = ids or (os.getuid(), os.getgid())
+        return f"orgtree-sandbox:{ver}-{sandbox.IMG_REV}-u{uid}-g{gid}"
+
+    TAG = tag_for("2.1.220")
 
     def fresh(name, **kw):
         FD.calls.clear()
@@ -404,7 +409,22 @@ if section("§2  the container contract"):
     def mounts(argv):
         return [argv[i + 1] for i, x in enumerate(argv) if x == "-v"]
 
-    @t("ensure_image builds a tag carrying the HOST CLI version + image rev")
+    @t("agent_ids() is the backend's own uid/gid (bind mounts keep raw uids)")
+    def _():
+        if os.getuid() != 0:
+            assert sandbox.agent_ids() == (os.getuid(), os.getgid())
+
+    @t("…and a ROOT backend falls back (an image agent of uid 0 is root)")
+    def _():
+        real = os.getuid
+        os.getuid = lambda: 0
+        try:
+            assert sandbox.agent_ids() == sandbox.ROOT_FALLBACK_IDS
+            assert sandbox.ROOT_FALLBACK_IDS[0] != 0
+        finally:
+            os.getuid = real
+
+    @t("ensure_image builds a tag carrying the CLI version, image rev and ids")
     def _():
         FD.images.clear()
         FD.calls.clear()
@@ -412,6 +432,8 @@ if section("§2  the container contract"):
         b = FD.find("build")
         assert b and b[0][b[0].index("-t") + 1] == TAG, b
         assert "--build-arg" in b[0] and "CLAUDE_VERSION=2.1.220" in b[0], b
+        uid, gid = sandbox.agent_ids()
+        assert f"AGENT_UID={uid}" in b[0] and f"AGENT_GID={gid}" in b[0], b
         assert b[0][-1] == os.path.join(sandbox.REPO_ROOT, "sandbox"), b
 
     @t("…and does NOT rebuild when the tag already exists")
@@ -604,9 +626,82 @@ if section("§2  the container contract"):
         sandbox.ensure_container(store.load_org(SLUG_A))
         assert FD.find("rm", "-f", NAME_A), FD.calls
         run = FD.last_run()
-        assert run[-3] == f"orgtree-sandbox:2.1.221-{sandbox.IMG_REV}", run[-3]
+        assert run[-3] == tag_for("2.1.221"), run[-3]
         assert f"{sandbox.usrlocal_volume('2.1.221')}:/usr/local:ro" in mounts(run)
         supervisor.cli_version = lambda: "2.1.220"
+
+    @t("☞ a host uid move recreates the container on a rebuilt image")
+    def _():
+        real = sandbox.agent_ids
+        sandbox.agent_ids = lambda: (4242, 4343)
+        try:
+            FD.calls.clear()
+            sandbox.ensure_container(store.load_org(SLUG_A))
+            assert FD.find("rm", "-f", NAME_A), FD.calls
+            b = FD.find("build")
+            assert b and "AGENT_UID=4242" in b[0] and "AGENT_GID=4343" in b[0], b
+            assert FD.last_run()[-3] == tag_for("2.1.220", (4242, 4343))
+        finally:
+            sandbox.agent_ids = real
+        sandbox.ensure_container(store.load_org(SLUG_A))
+        assert FD.last_run()[-3] == TAG
+
+    @t("☞ every create first syncs agent's ids into the org's OWN /etc volume")
+    def _():
+        FD.containers.pop(NAME_A, None)
+        FD.calls.clear()
+        sandbox.ensure_container(store.load_org(SLUG_A))
+        idx = [i for i, c in enumerate(FD.calls) if c[:1] == ["run"]]
+        assert len(idx) == 2, FD.calls
+        sync, main = (FD.calls[i] for i in idx)
+        assert "--rm" in sync and "-d" in main, (sync, main)
+        assert sync[sync.index("-u") + 1] == "root", sync
+        uid, gid = sandbox.agent_ids()
+        assert sync[-4:] == [TAG, "orgtree-agent-ids", str(uid), str(gid)], sync
+        assert mounts(sync) == [f"{sandbox.sys_volume(SLUG_A, 'etc')}:/etc",
+                                f"{HOME_A}:/home/agent"], sync
+
+    @t("a failed id sync raises instead of starting a wrong-uid container")
+    def _():
+        FD.containers.pop(NAME_A, None)
+        FD.calls.clear()
+        real = FD.cp
+
+        def cp(args, rc=0, out="", err=""):
+            if args[:2] == ["run", "--rm"]:
+                return real(args, 1, "", "usermod: bad uid")
+            return real(args, rc, out, err)
+        FD.cp = cp
+        try:
+            sandbox.ensure_container(store.load_org(SLUG_A))
+            raise AssertionError("no raise")
+        except RuntimeError as e:
+            assert "uid sync failed" in str(e) and "bad uid" in str(e), e
+        finally:
+            FD.cp = real
+        assert not any(c[:1] == ["run"] and "-d" in c for c in FD.calls), \
+            FD.calls
+        sandbox.ensure_container(store.load_org(SLUG_A))
+
+    @t("chowns name agent by NUMERIC ids (its group may be a reused one)")
+    def _():
+        FD.calls.clear()
+        own = "%d:%d" % sandbox.agent_ids()
+        sandbox._heal_ownership(NAME_A)
+        sandbox.chown_agent(store.load_org(SLUG_A), "n1", "outbox")
+        sandbox.chown_home_path(store.load_org(SLUG_A),
+                                os.path.join(HOME_A, ".claude", "x.jsonl"))
+        ch = [c for c in FD.calls if c[:1] == ["exec"] and "chown" in c]
+        assert len(ch) == 3, FD.calls
+        assert all(own in c and "agent:agent" not in c for c in ch), ch
+        assert ch[2][-1] == "/home/agent/.claude/x.jsonl", ch[2]
+
+    @t("chown_home_path ignores a path outside the sandbox home")
+    def _():
+        FD.calls.clear()
+        sandbox.chown_home_path(store.load_org(SLUG_A),
+                                os.path.join(DATA, "elsewhere", "f"))
+        assert not FD.find("exec"), FD.calls
 
     @t("a container from an older LAYOUT is recreated too")
     def _():
@@ -1178,7 +1273,6 @@ if section("§6  the sandboxed turn"):
             adds
         joined = " ".join(CMD)
         assert DATA not in joined, "the host data root leaked into the argv"
-        assert "C:\\" not in joined and "c:\\" not in joined.lower(), joined[:400]
 
     @t("☞ a §7.6 read-down grant reaches the descendant's CONTAINER scratch")
     def _():
@@ -1323,7 +1417,7 @@ if section("§6  the sandboxed turn"):
     @t("an UNSANDBOXED org is never translated")
     def _():
         o = store.load_org(O_PLAIN.d["slug"])
-        assert supervisor.sandbox_dirs_to_host(o, ["C:\\x"]) == (["C:\\x"], [])
+        assert supervisor.sandbox_dirs_to_host(o, ["/srv/x"]) == (["/srv/x"], [])
 
     # ---- steering into the container, over the real bridge listener
     @t("☞ steer.py inside a container reaches the node through the bridge")
@@ -1805,8 +1899,8 @@ if section("§8  creation-time rules"):
 # zzsbx- slug and removed in the finally block; nothing else on the daemon is
 # inspected, stopped or deleted.
 def dk(*args, timeout=300):
-    # utf-8, not the console codepage: an org chart carries box-drawing
-    # characters and cp1252 raised inside subprocess's reader thread
+    # utf-8, not the locale's encoding: an org chart carries box-drawing
+    # characters, and a non-utf-8 locale raises in subprocess's reader thread
     return subprocess.run(["docker", *args], capture_output=True, text=True,
                           encoding="utf-8", errors="replace", timeout=timeout)
 
@@ -1877,24 +1971,38 @@ elif DOCKER_TIER:
                     r = dk("exec", NAME9, "sh", "-c", f"touch {d}/.probe")
                     assert r.returncode == 0, (d, r.stderr)
 
-            @t("⚑ DEFECT: host binds and the in-container agent disagree on uid")
+            @t("the agent runs as the backend's uid, so it owns its own home")
             def _():
-                """The image's `agent` is uid 1001; host bind sources are
-                created by the backend's uid. `/home/agent` is never chowned,
-                so the CLI cannot write its own home; `_heal_ownership`
-                chowns the data tree to 1001, so the backend then cannot
-                write workspace or scratch from the host side."""
-                home = dk("exec", NAME9, "sh", "-c", "touch /home/agent/.probe")
-                agent_uid = dk("exec", NAME9, "id", "-u").stdout.strip()
-                if home.returncode == 0 or agent_uid == str(os.getuid()):
-                    raise AssertionError("FIXED — retire this reproduction")
-                note("sandbox: the image's agent uid (1001) differs from the "
-                     "backend's host uid, so host bind mounts are writable "
-                     "from only one side — /home/agent is read-only to the "
-                     "agent, and after _heal_ownership the backend loses "
-                     "write access to workspace and scratch. Needs the image "
-                     "to build `agent` with the host uid (or an equivalent "
-                     "mapping). Reported, not fixed.")
+                uid = dk("exec", NAME9, "id", "-u").stdout.strip()
+                assert uid == str(sandbox.agent_ids()[0]), uid
+                r = dk("exec", NAME9, "sh", "-c", "touch /home/agent/.probe")
+                assert r.returncode == 0, r.stderr
+
+            @t("the agent keeps passwordless sudo under the new uid")
+            def _():
+                r = dk("exec", NAME9, "sudo", "-n", "id", "-u")
+                assert r.returncode == 0 and r.stdout.strip() == "0", \
+                    (r.stdout, r.stderr)
+
+            @t("after the start-time heal the BACKEND still writes both binds")
+            def _():
+                for d in (O9.d["workspace"], store.scratch_root(S9)):
+                    p = os.path.join(d, ".host-probe")
+                    with open(p, "w", encoding="utf-8") as f:
+                        f.write("x")
+                    os.remove(p)
+
+            @t("☞ an org whose /etc volume predates the uid gets its ids synced")
+            def _():
+                # an org first created on the old image, where agent was 1001
+                dk("rm", "-f", NAME9, timeout=60)
+                r = dk("run", "--rm", "-u", "root", "-v",
+                       f"{sandbox.sys_volume(S9, 'etc')}:/etc", TAG9,
+                       "usermod", "-u", "4999", "agent")
+                assert r.returncode == 0, r.stderr
+                name = sandbox.ensure_container(store.load_org(S9))
+                uid = dk("exec", name, "id", "-u").stdout.strip()
+                assert uid == str(sandbox.agent_ids()[0]), uid
         finally:
             sandbox.remove(S9)
             drop(S9)
