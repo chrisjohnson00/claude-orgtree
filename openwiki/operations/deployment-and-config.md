@@ -66,9 +66,8 @@ public listener, with hard caps on credits, spend, and workspace storage; the
 admin app itself never leaves `127.0.0.1`. `expose.ps1`/`expose-full.ps1`
 open a Cloudflare quick tunnel for zero-router-setup access. Codex,
 Antigravity, and OpenRouter are unavailable in kiosk orgs while sandbox
-support for them is held back; sandboxed orgs additionally require Docker
-Desktop with the WSL2 backend (each org's virtual disk is loop-mounted inside
-the docker-desktop WSL distro).
+support for them is held back; sandboxed orgs additionally require a running
+Docker daemon.
 
 ## The mail hub (`hub/`)
 

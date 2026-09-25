@@ -27,8 +27,8 @@ import { detachedKind } from '../windowlife'
 // STACKING. Centred modals are z-index 20. A pinned modal must stay usable
 // while another surface opens over it (Astra 2026-09-06), so pinned windows
 // take a band ABOVE them, 21–29, hard-clamped exactly like the agent band. The
-// disk browser (55), the folder picker (60), the lightbox (95) and toasts
-// (100) stay on top of everything, unchanged.
+// folder picker (60), the lightbox (95) and toasts (100) stay on top of
+// everything, unchanged.
 //
 // What persists (localStorage `orgtree-modal-pins`): a map of kind → {rect,z}.
 // A kind IS the pin — present means pinned, absent means centred — so the
@@ -63,15 +63,15 @@ export interface ModalPin {
   z: number
 }
 
-/** the band, above the centred overlays (20) and below the disk browser (55) */
+/** the band, above the centred overlays (20) and below the folder picker (60) */
 export const MODAL_Z_BASE = 21
 export const MODAL_Z_TOP = 29
 export const modalZIndex = (z: number): number =>
   Math.min(MODAL_Z_TOP, MODAL_Z_BASE + Math.max(0, z))
 
 /** one step above the whole pinned band, for a dialog raised FROM a pinned
- *  window (see ModalOverPins). Still below the disk browser's own centred
- *  layer (55), the folder picker (60), the lightbox (95) and toasts (100). */
+ *  window (see ModalOverPins). Still below the folder picker (60), the
+ *  lightbox (95) and toasts (100). */
 export const MODAL_OVER_PINS_Z = 31
 
 export const MODAL_PINS_KEY = 'orgtree-modal-pins'
@@ -288,11 +288,6 @@ export interface PinFrameProps {
   title: ReactNode
   /** the panel's own classes, exactly the ones it had before it was wrapped */
   panel: string
-  /** extra classes for the OVERLAY, for the one surface that had them: the
-   *  disk browser's `.disk-overlay` carries its centred layer (z-index 55).
-   *  Pinning overrides that with the band's inline z-index, so the class can
-   *  stay exactly as it was and the centred layer is untouched. */
-  overlayClass?: string
   /** dismiss the surface (the same `close` the panel already had) */
   close: () => void
   children: ReactNode
@@ -320,7 +315,7 @@ export function PinFrame(props: PinFrameProps) {
   return <MovableSurface key={scope} org={scope} kind={props.kind} title={props.title}><PinFrameInner {...props} /></MovableSurface>
 }
 
-function PinFrameInner({ kind, title, panel, overlayClass, close, children,
+function PinFrameInner({ kind, title, panel, close, children,
   onEsc, backdropClose = true, onPanelClick, pinnable = true, dialogLabel }: PinFrameProps) {
   const pin = useModalPin(kind)
   const surface = useSurface()
@@ -429,7 +424,7 @@ function PinFrameInner({ kind, title, panel, overlayClass, close, children,
     ? { left: rect.x, top: rect.y, width: rect.w, height: rect.h }
     : undefined
   return (
-    <div className={'overlay' + (overlayClass ? ' ' + overlayClass : '')
+    <div className={'overlay'
       + (pinned ? ' overlay-pinned' : '') + (detached ? ' overlay-detached' : '')}
       style={pin && !detached ? { zIndex: modalZIndex(pin.z) } : undefined}
       onClick={pinned || detached || !backdropClose ? undefined

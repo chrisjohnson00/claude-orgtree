@@ -711,14 +711,6 @@ def _r_renamed(ev: _R) -> str:
             f"Sign and refer to yourself as {ev['new']!r} from now on.")
 
 
-@renderer("lifecycle.disk_migrated")
-def _r_disk_migrated(ev: _R) -> str:
-    return (f"Storage migration: this org's {ev['floored_from']} MB limit was raised to "
-            f"the 4096 MB one-disk minimum (system seed + transcripts now count inside "
-            f"the cap). Its agents may consume up to 4 GB; the disk can be grown online "
-            f"or shrunk (staged) from the storage browser.")
-
-
 @renderer("policy.fable_flagged")
 def _r_fable_flagged(ev: _R) -> str:
     node, oc, aud = ev["node"], ev["outcome"], ev["audience"]
@@ -1027,20 +1019,6 @@ def _r_restart_notice(ev: _R) -> str:
 @renderer("runtime.storage")
 def _r_storage(ev: _R) -> str:
     used, cap, lvl = float(ev["used_mb"]), ev.get("cap_mb"), ev["level"]
-    if ev["scope"] == "disk":
-        total = float(cap or 0)
-        if lvl == "over":
-            return (f"⚠ The org disk is at {used:.0f} of {total:.0f} MB (past the 90% "
-                    f"soft cap). New turns are PAUSED until usage drops under 85% — the "
-                    f"remaining space is the reserve that keeps session journaling "
-                    f"alive. Delete files (the admin can also use the recovery browser "
-                    f"or grow the disk); at 100% every write fails with ENOSPC.")
-        if lvl == "cleared":
-            return (f"The org disk is back under the soft cap ({used:.0f} / {total:.0f} "
-                    f"MB) — turns resume.")
-        return (f"Heads-up: the org disk is at {used:.0f} of {total:.0f} MB (past 80%). "
-                f"Clean up or curb file growth — at 90% new turns pause; at 100% "
-                f"writes fail with ENOSPC.")
     # the cap was an int (`storage_limit_mb`) in the old text: print it as one
     lim = ("∞" if cap is None else
            str(int(cap)) if float(cap).is_integer() else f"{float(cap):g}")

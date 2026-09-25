@@ -105,13 +105,12 @@ Claude tiers.
 
 | variable | default | what it does |
 |---|---|---|
-| `ORGTREE_SANDBOX_IMAGE` | `orgtree-sandbox` | container image tag (`sandbox.py:52`) |
-| `ORGTREE_SANDBOX_MEM` | `4g` | container memory (`sandbox.py:58`) |
-| `ORGTREE_SANDBOX_CPUS` | `2` | container CPUs (`sandbox.py:59`) |
-| `ORGTREE_SANDBOX_TMP` | `1g` | `/tmp` tmpfs, counts against memory (`sandbox.py:77`) |
-| `ORGTREE_SANDBOX_RUN` | `64m` | `/run` tmpfs (`sandbox.py:78`) |
-| `ORGTREE_SANDBOX_DISK_MB` | `20480` | virtual-disk size when the org does not specify (`sandbox.py:81`) |
-| `ORGTREE_BRIDGE_PORT` | `7362` | the BridgeGateway — the one door out of a container (`sandbox.py:57`) |
+| `ORGTREE_SANDBOX_IMAGE` | `orgtree-sandbox` | container image tag (`sandbox.py:49`) |
+| `ORGTREE_SANDBOX_MEM` | `4g` | container memory (`sandbox.py:55`) |
+| `ORGTREE_SANDBOX_CPUS` | `2` | container CPUs (`sandbox.py:56`) |
+| `ORGTREE_SANDBOX_TMP` | `1g` | `/tmp` tmpfs, counts against memory (`sandbox.py:62`) |
+| `ORGTREE_SANDBOX_RUN` | `64m` | `/run` tmpfs (`sandbox.py:63`) |
+| `ORGTREE_BRIDGE_PORT` | `7362` | the BridgeGateway — the one door out of a container (`sandbox.py:54`) |
 | `ORGTREE_SANDBOX_API_KEY` | — | ⚠ escape hatch: a literal API key instead of the proxied subscription (`sandbox.uses_subscription_auth` / `sandbox.container_auth`) |
 | `ORGTREE_SANDBOX_MCP` | off | EXPERIMENTAL — allow MCP servers inside a sandbox (`supervisor.py:479`) |
 
@@ -230,9 +229,8 @@ indistinguishable from "no such org" so the kiosk roster cannot be enumerated.
 
 ### Sandbox on a non-kiosk org
 
-`sandbox: bool` + `disk_mb` (≥ 4096) at creation (`api.py:469-471`), or enabled later. One capped
-ext4 image holds everything persistent; ENOSPC is the enforcement. Soft alert at 90 %, persistent
-alert at 99 %.
+`sandbox: bool` at creation (`OrgCreate` in `api.py`). The org doc stores `sandbox = {enabled,
+secret}`. Sandboxed orgs have no storage cap.
 
 ---
 
@@ -306,7 +304,7 @@ Design record: `docs/mailserver-spec.md` (§12 rulings) + DECISIONS.md D-097/D-0
 ## Browser-local state (not configuration, but it looks like it)
 
 Kept in `localStorage`, per browser, never synced and never in the org doc: inbox-seen watermark
-and card-pile layout per org (`OrgCanvas.tsx:57,88`), disk-browser mode (`DiskBrowser.tsx:52`). A
+and card-pile layout per org (`OrgCanvas.tsx:57,88`). A
 different browser or a cleared profile starts fresh — that is intended, not a bug.
 
 ---

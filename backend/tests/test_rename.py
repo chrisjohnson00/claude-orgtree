@@ -1238,43 +1238,6 @@ def sec_supervisor() -> None:
     check("a deleted agent's name can be reclaimed by renaming another",
           _reclaim_a_deleted_name)
 
-    def _forget_misses_an_on_disk_scratch():
-        # found while reproducing the above: forget() resolves the scratch
-        # root WITHOUT the on-disk branch that scratch_dir() has
-        org, slug, d, p = setup()
-        from orgtree import disk as dsk, sandbox as sbx
-        o = store.load_org(slug)
-        o.d["disk"] = {"size_mb": 4096, "migrated_at": "2026-01-01"}
-        store.save_org(o)
-        real_sub, real_flag = dsk.windows_sub, dict(sbx._disk_flag)
-        root = os.path.join(_TMP, "diskview")
-        dsk.windows_sub = lambda slug_, sub: os.path.join(root, slug_, sub)
-        sbx._disk_flag.clear()
-        try:
-            live = supervisor.scratch_dir(slug, "kid")
-            with open(os.path.join(live, "work.txt"), "w", encoding="utf-8") as fh:
-                fh.write("the agent's files")
-            o = store.load_org(slug)
-            res = o.delete(USER, "kid")
-            store.save_org(o)
-            supervisor.forget(slug, res.get("deleted") or ["kid"])
-            assert not os.path.isdir(live), (
-                f"a disk-migrated org's scratch dir survived the delete: "
-                f"{live} still holds {os.listdir(live)}. forget() removes "
-                f"store.scratch_root(slug)/<nid>, but scratch_dir() puts a "
-                f"disk-migrated org's scratch on the DISK — so the rmtree "
-                f"targets a path that does not exist and ignore_errors=True "
-                f"hides the miss")
-        finally:
-            dsk.windows_sub = real_sub
-            sbx._disk_flag.clear()
-            sbx._disk_flag.update(real_flag)
-    # promoted from gap() 2026-08-05: forget() now branches on the
-    # disk-migrated case exactly like scratch_dir() — the rmtree aims at the
-    # org disk's scratch, not a phantom under store.scratch_root
-    check("deleting a node removes its scratch dir on a DISK-MIGRATED org too",
-          _forget_misses_an_on_disk_scratch)
-
 
 def main() -> int:
     print("orgtree · agent rename (ledger.rename + supervisor.rename_node)")

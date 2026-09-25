@@ -35,8 +35,6 @@ import os
 import shutil
 import subprocess
 import threading
-import time
-import uuid
 from typing import TYPE_CHECKING, Any
 
 from . import store
@@ -57,27 +55,12 @@ BRIDGE_PORT: int = int(os.environ.get("ORGTREE_BRIDGE_PORT", "7362") or 0)
 MEM: str = os.environ.get("ORGTREE_SANDBOX_MEM", "4g")
 CPUS: str = os.environ.get("ORGTREE_SANDBOX_CPUS", "2")
 
-# --- the one-disk sandbox (user hard requirement 2026-07-31; pivot shipped
-# 2026-08-01, D-063: no one in the container may exhaust host disk beyond a
-# fixed limit, while container state stays fully editable and survives
-# restarts) ------------------------------------------------------------------
-# Every sandboxed org's entire mutable state — system dirs, home incl.
-# transcripts, workspace, scratch — lives on ONE fixed-size ext4 image,
-# loop-mounted by the docker-desktop distro and bind-mounted into the
-# container. The FILESYSTEM is the hard cap (ENOSPC); soft tiers in
-# supervisor._storage_check_disk pause turns near it; the container is never
-# stopped for storage. The rootfs runs READ-ONLY (no unmeasured writable
-# surface); /tmp and /run are sized RAM tmpfs, bounded by --memory.
-# The pre-disk design (per-org named volumes + reactive daemon-side
-# measurement → container stop + freeze) is RETIRED — the SYS_DIRS volume
-# names below survive only as migrate_to_disk's source material and the
-# per-org rollback the admin sweeps from the settings panel.
+# Storage: the rootfs runs READ-ONLY; /tmp and /run are sized RAM tmpfs,
+# bounded by --memory. System dirs are per-org named volumes; home, workspace
+# and scratch are host bind mounts. There is no per-org storage cap.
 SYS_DIRS: tuple[str, ...] = ("usr", "var", "etc", "opt", "root", "srv")
 TMP_SIZE: str = os.environ.get("ORGTREE_SANDBOX_TMP", "1g")
 RUN_SIZE: str = os.environ.get("ORGTREE_SANDBOX_RUN", "64m")
-# default per-org disk limit (MB) for sandboxed orgs whose kiosk/org config
-# doesn't set one — 0 disables the default (NOT recommended: unbounded)
-DISK_MB: int = int(os.environ.get("ORGTREE_SANDBOX_DISK_MB", "20480") or 0)
 
 
 def sys_volume(slug: str, d: str) -> str:
@@ -85,175 +68,17 @@ def sys_volume(slug: str, d: str) -> str:
 
 
 # container layout generation — a label on the container; mismatch = recreate
-LAYOUT: str = "disk-v1"
+LAYOUT: str = "binds-v1"
 
 
 def usrlocal_volume(ver: str) -> str:
     """The version-tagged READ-ONLY /usr/local (user verdict: the CLI stays
-    image-pinned even though /usr rides the org disk). Docker seeds it from
+    image-pinned even though /usr is a writable volume). Docker seeds it from
     the image on first mount; the version in the name is the №44 invariant —
     a host CLI update moves the name, and the fresh volume seeds from the
     freshly built image."""
     return f"orgtree-usrlocal-{ver}-{IMG_REV}"
 
-
-def migrate_to_disk(org: Org) -> None:
-    """One-time move of a sandboxed org onto its virtual disk (user-approved
-    auto-migration): create+mount the disk, copy the org's whole state into
-    it — system dirs from its legacy volumes (preserving installs) or the
-    image, home/workspace/scratch from the host dirs — verify per-tree file
-    counts, then flip the org doc's paths. Old volumes and host dirs are
-    KEPT (rollback: clear org.d['disk'] and restart). The calling turn waits;
-    a multi-GB org takes minutes, once."""
-    from . import disk as dsk
-    from .ledger import SYSTEM, now
-    slug = org.d["slug"]
-    k = org.d.get("kiosk") or {}
-    size_mb = (int(k.get("storage_limit_mb") or 0)
-               or int((org.d.get("sandbox") or {}).get("limit_mb") or 0)
-               or DISK_MB)
-    # one-disk semantics: the ~1 GB system seed and transcripts live INSIDE
-    # the cap now — a limit written for the old workspace-only accounting
-    # (e.g. 256 MB) cannot even hold the seed. Floor it.
-    floored_from = 0
-    if size_mb < 4096:
-        floored_from = size_mb
-        print(f"[orgtree] org {slug!r}: configured storage limit {size_mb} MB "
-              f"is below the 4096 MB one-disk minimum (the system seed and "
-              f"transcripts count now) — using 4096 MB")
-        size_mb = 4096
-    print(f"[orgtree] migrating org {slug!r} onto its {size_mb} MB disk …")
-    dsk.create(slug, size_mb)
-    _docker("stop", "-t", "20", container_name(slug), timeout=60)
-    image_tag = ensure_image()
-    old_home = os.path.join(sandbox_root(slug), "home")
-    old_ws = org.d.get("workspace")
-    old_scratch = store.scratch_root(slug)
-    vols = {d: sys_volume(slug, d)
-            for d in ("usr", "var", "etc", "opt", "root", "srv")
-            if _docker("volume", "inspect", sys_volume(slug, d)).returncode == 0}
-    args: list[str] = ["run", "--rm", "-u", "root",
-                       "-v", f"{dsk.mount_path(slug)}:/dst"]
-    for d, v in vols.items():
-        args += ["-v", f"{v}:/old/{d}:ro"]
-    for sub, host in (("home", old_home), ("workspace", old_ws),
-                      ("scratch", old_scratch)):
-        if host and os.path.isdir(host):
-            args += ["-v", f"{host}:/oldhost/{sub}:ro"]
-    # system dirs seed from the legacy volume when present, else the image's
-    # own rootfs (this helper RUNS that image); host trees copy when present.
-    # cp -a preserves modes/links; each tree is count-verified src vs dst.
-    script = (
-        "set -e; AUID=$(id -u agent); AGID=$(id -g agent); "
-        "for d in usr var etc opt root srv; do "
-        "  mkdir -p /dst/$d; "
-        "  if [ -d /old/$d ]; then S=/old/$d; else S=/$d; fi; "
-        "  cp -a $S/. /dst/$d/; "
-        "  a=$(find $S -type f | wc -l); b=$(find /dst/$d -type f | wc -l); "
-        "  [ \"$a\" = \"$b\" ] || { echo MISMATCH $d $a $b; exit 9; }; "
-        "done; "
-        "for s in home workspace scratch; do "
-        "  mkdir -p /dst/$s; "
-        "  if [ -d /oldhost/$s ]; then "
-        "    cp -a /oldhost/$s/. /dst/$s/; "
-        "    a=$(find /oldhost/$s -type f | wc -l); "
-        "    b=$(find /dst/$s -type f | wc -l); "
-        "    [ \"$a\" = \"$b\" ] || { echo MISMATCH $s $a $b; exit 9; }; "
-        "  fi; "
-        "  chown -R $AUID:$AGID /dst/$s; "
-        "done; echo MIGRATED")
-    r = _docker(*args, image_tag, "sh", "-c", script, timeout=3600)
-    if r.returncode != 0 or "MIGRATED" not in (r.stdout or ""):
-        raise RuntimeError(f"org {slug!r} disk migration failed — nothing "
-                           f"was flipped; old state is untouched: "
-                           + (r.stderr or r.stdout)[-500:])
-    new_ws = dsk.windows_sub(slug, "workspace")
-    with store.DOC_LOCK:
-        o2 = store.load_org(slug)
-        o2.d["disk"] = {"size_mb": size_mb, "migrated_at": now()}
-        # the legacy enforcement is RETIRED (user ruling 2026-08-01, D-063):
-        # clear any pre-migration storage freeze the doc still carries —
-        # nothing sets or clears that flag anymore, so it would stick forever
-        o2.d.pop("storage_frozen", None)
-        for n in o2.nodes.values():
-            fz = n.get("frozen")
-            if isinstance(fz, dict) and fz.pop("storage", None):
-                fz.pop("storage_error", None)
-                if not fz.get("resume_texts") and not fz.get("error") \
-                        and not fz.get("until"):
-                    n.pop("frozen", None)
-        if old_ws:
-            for dd in o2.d["dirs"]:
-                if os.path.normpath(dd["path"]) == os.path.normpath(old_ws):
-                    dd["path"] = new_ws
-            for n in o2.nodes.values():
-                for dd in n["scope"]["add_dirs"]:
-                    if os.path.normpath(dd["path"]) == os.path.normpath(old_ws):
-                        dd["path"] = new_ws
-        o2.d["workspace"] = new_ws
-        if floored_from:
-            # review 2026-08-01: flooring RAISES a cap the operator
-            # deliberately set — that change belongs in their inbox, not
-            # only the backend log
-            from . import events as _events
-            dev = _events.mint("lifecycle.disk_migrated", {"kind": "system", "id": SYSTEM},
-                               o2.org_ref(), floored_from=str(floored_from))
-            o2.to_user_inbox({
-                "id": uuid.uuid4().hex[:12], "from": SYSTEM, "kind": "notice",
-                "at": now(), "body": _events.render_agent(dev)}, dev)
-        store.save_org(o2)
-    _disk_flag.pop(slug, None)
-    print(f"[orgtree] org {slug!r} migrated to its disk "
-          f"({size_mb} MB; legacy volumes kept for rollback)")
-
-
-_vm_cap_cache: tuple[float, int | None] | None = None
-
-
-def vm_disk_cap_mib() -> int | None:
-    """Docker Desktop's VM disk cap in MiB, or None when unset — the ABSOLUTE
-    host bound on every container, image, and (sparse) org disk, no matter
-    what this code does. A host setting we can only read; best-effort, the
-    settings file location/keys are Docker Desktop internals. Surfaced
-    IN-PRODUCT by the recovery browser (review suggestion 2026-08-01: the
-    admin staring at storage is the right audience, not the backend log)."""
-    global _vm_cap_cache
-    if _vm_cap_cache and time.time() - _vm_cap_cache[0] < 300:
-        return _vm_cap_cache[1]
-    cap: int | None = None
-    if os.name == "nt":
-        try:
-            p = os.path.join(os.environ.get("APPDATA", ""), "Docker",
-                             "settings-store.json")
-            cfg: dict[str, Any] = (json.load(open(p, encoding="utf-8"))
-                                   if os.path.exists(p) else {})
-            raw = next((v for k, v in cfg.items()
-                        if k.lower() == "disksizemib"), None)
-            cap = int(raw) if raw else None
-        except Exception:                                # noqa: BLE001
-            cap = None
-    _vm_cap_cache = (time.time(), cap)
-    return cap
-
-
-_vm_cap_warned = False
-
-
-def _warn_vm_cap() -> None:
-    """One startup log line (the browser carries the in-product version)."""
-    global _vm_cap_warned
-    if _vm_cap_warned or os.name != "nt":
-        return
-    _vm_cap_warned = True
-    cap = vm_disk_cap_mib()
-    if cap:
-        print(f"[orgtree] Docker VM disk cap: {cap} MiB "
-              f"(the absolute sandbox storage backstop)")
-    else:
-        print("[orgtree] ⚠ Docker Desktop's disk image size is UNSET "
-              "(defaults to a ~1 TB sparse disk) — the recovery browser "
-              "shows this to the admin; set it in Docker Desktop → "
-              "Settings → Resources.")
 
 _build_lock: threading.Lock = threading.Lock()
 
@@ -302,9 +127,9 @@ def uses_subscription_auth(k: dict[str, Any] | None) -> bool:
     (the 'subscription' escape hatch — docstring: private single-user
     installs only). Security review 2026-08-01: this mode and a PUBLIC
     kiosk URL are mutually exclusive STRUCTURALLY — the OAuth token lands
-    on the org disk, root-in-container can copy it to any path, and the
-    recovery browser serves the disk to visitors; no filename denylist can
-    be a boundary. Both enable-orderings are refused."""
+    in the sandbox home and root-in-container can copy it to any path the
+    kiosk exposes; no filename denylist can be a boundary. Both
+    enable-orderings are refused."""
     key = ((k or {}).get("api_key")
            or os.environ.get("ORGTREE_SANDBOX_API_KEY") or "proxied")
     return str(key).strip().lower() == "subscription"
@@ -316,25 +141,6 @@ def container_name(slug: str) -> str:
 
 def sandbox_root(slug: str) -> str:
     return os.path.join(_DATA, "sandboxes", slug)
-
-
-# virtual-disk pivot (user verdict 2026-07-31): a migrated org's state lives
-# ON its disk; host-side readers must follow it there. The flag is on the org
-# doc — cached briefly so hot paths (usage walks, transcript reads) don't
-# re-load the doc per call.
-_disk_flag: dict[str, tuple[float, bool]] = {}
-
-
-def on_disk(slug: str) -> bool:
-    hit = _disk_flag.get(slug)
-    if hit and time.time() - hit[0] < 10:
-        return hit[1]
-    try:
-        val = bool(store.load_org(slug).d.get("disk"))
-    except Exception:                                    # noqa: BLE001
-        val = False
-    _disk_flag[slug] = (time.time(), val)
-    return val
 
 
 def auth_label(org: Org, k: Any = None) -> str:
@@ -398,9 +204,6 @@ def anthropic_proxy_api_key(org: Org, *, fallback_active: bool = False) -> str:
 
 
 def sandbox_home(slug: str) -> str:
-    if on_disk(slug):
-        from . import disk
-        return disk.windows_sub(slug, "home")
     return os.path.join(sandbox_root(slug), "home")
 
 
@@ -430,9 +233,9 @@ def bridge_file_config(org: Org) -> dict[str, str]:
 def chown_agent(org: Org, nid: str, *rel: str) -> None:
     """Hand a backend-minted path inside a sandboxed org to the agent.
 
-    The backend writes through the \\\\wsl.localhost UNC view, and everything
-    it creates lands root-owned inside the container — while the CLI runs as
-    `agent` (uid 1001). A root-owned `outbox/` or `uploads/` reads to the
+    The backend writes through the host bind mounts as its own uid, which
+    the container does not map to `agent` (uid 1001) — the CLI runs as
+    `agent`. A root-owned `outbox/` or `uploads/` reads to the
     agent as "my scratch is broken" (live bug 2026-08-04, kiosk `vnuser`).
     Best-effort by design: with the container down the exec fails silently,
     and the start-time heal in ensure_container covers it instead."""
@@ -542,30 +345,6 @@ def ensure_container(org: Org) -> str:
     if not docker_ok():
         raise RuntimeError("Docker is not running — start Docker Desktop "
                            "(kiosk sandboxes run their turns in containers)")
-    _warn_vm_cap()
-    from . import disk as dsk
-    # virtual-disk pivot (user verdict): every sandboxed org rides its own
-    # capped ext4 disk. Legacy (volume-layout) orgs migrate on first need —
-    # user-approved auto-migration; old volumes are KEPT for rollback.
-    if not org.d.get("disk"):
-        migrate_to_disk(org)
-        org = store.load_org(slug)        # workspace/dirs were rewritten
-    ins0 = _docker("container", "inspect", "-f", "{{.State.Running}}", name)
-    if ins0.returncode != 0 or ins0.stdout.strip() != "true":
-        # a natural container-down moment — the RULED trigger for a pending
-        # shrink (it needs THIS org's container down, never the backend).
-        # Best-effort: a refusal keeps the request pending, logged; the UI's
-        # divergence chip keeps showing intent vs reality.
-        try:
-            note = try_apply_pending_resize(org)
-            if note:
-                print(f"[orgtree] org {slug!r}: {note}")
-        except Exception as e:                          # noqa: BLE001
-            print(f"[orgtree] org {slug!r}: pending-shrink attempt failed: {e}")
-    # ⚠ mount-verify before EVERY start: /mnt/wsl dies with the WSL VM and
-    # Docker mints an EMPTY DIR for a missing bind source — an org must
-    # hard-refuse to run rather than bind an empty workspace and diverge.
-    dsk.mount(slug)                        # sentinel-verified; raises DiskError
     from . import supervisor        # lazy — supervisor imports this module
     want = _desired_image_tag()
     ins = _docker("container", "inspect", "-f",
@@ -580,7 +359,7 @@ def ensure_container(org: Org) -> str:
         cur_auth = parts[3] if len(parts) > 3 else ""
         # №44: the CLI rides the version-tagged read-only /usr/local volume,
         # so an image move requires a recreate (which re-mounts that volume);
-        # a pre-disk layout recreates too (its state already migrated).
+        # an older mount layout recreates too.
         # AUTH likewise (redteam 2026-08-18): `docker run -e
         # ANTHROPIC_API_KEY=…` bakes the credential in, so a container created
         # under one auth kept billing that way after the org's settings moved
@@ -613,10 +392,10 @@ def ensure_container(org: Org) -> str:
         # structural, not a filter: see uses_subscription_auth
         raise RuntimeError(
             "subscription-auth sandbox with a PUBLIC kiosk URL is refused — "
-            "the copied host credentials live on the org disk visitors can "
-            "browse. Disable the kiosk URL or switch to proxied auth.")
+            "the copied host credentials live in the sandbox home, readable "
+            "by root in the container. Disable the kiosk URL or switch to proxied auth.")
     image_tag = ensure_image()
-    home = sandbox_home(slug)              # on-disk, via the UNC view
+    home = sandbox_home(slug)
     os.makedirs(os.path.join(home, "orgtree"), exist_ok=True)
     if use_sub:
         os.makedirs(os.path.join(home, ".claude"), exist_ok=True)
@@ -630,33 +409,39 @@ def ensure_container(org: Org) -> str:
         if not os.path.exists(cfg):
             with open(cfg, "w", encoding="utf-8") as f:
                 json.dump({"hasCompletedOnboarding": True}, f)
+    ws = org.d.get("workspace")
+    if not ws:
+        # pre-workspace-era org doc: without this, makedirs TypeErrors (or a
+        # literal "None" would be bind-mounted) — say what's wrong instead
+        raise RuntimeError(f"org {slug!r} has no workspace directory recorded "
+                           f"— cannot mount its sandbox container")
+    os.makedirs(ws, exist_ok=True)
+    scratch = store.scratch_root(slug)
+    os.makedirs(scratch, exist_ok=True)
     bridge_doc = bridge_file_config(org)
     with open(os.path.join(home, "orgtree", ".bridge"), "w",
               encoding="utf-8") as f:
         json.dump(bridge_doc, f)
-    mp = dsk.mount_path(slug)
     r = _docker(
         "run", "-d", "--name", name,
         "--label", f"orgtree.layout={LAYOUT}",
         "--label", f"orgtree.auth={auth_label(org, k)}",
         "--memory", MEM, "--cpus", CPUS,
-        # ONE capped disk (user verdict): rootfs read-only, every persistent
-        # write — system dirs, home incl. transcripts, workspace, scratch —
-        # lands on the org's ext4 image; ENOSPC is the enforcement. /tmp and
-        # /run are RAM, bounded by --memory. /usr/local is the version-tagged
+        # rootfs read-only: persistent writes land only in the system-dir
+        # volumes or the host binds below. /usr/local is the version-tagged
         # READ-ONLY volume: the CLI stays image-pinned under the /usr shadow.
         "--read-only",
         "--tmpfs", f"/tmp:rw,size={TMP_SIZE},mode=1777",
         "--tmpfs", f"/run:rw,size={RUN_SIZE}",
-        *[a for d in SYS_DIRS for a in ("-v", f"{mp}/{d}:/{d}")],
+        *[a for d in SYS_DIRS for a in ("-v", f"{sys_volume(slug, d)}:/{d}")],
         "-v", f"{usrlocal_volume(supervisor.cli_version())}:/usr/local:ro",
         "--add-host", "host.docker.internal:host-gateway",
         *[item for env_key, env_val in
           sorted(shared_container_auth_env(org, k).items())
           for item in ("-e", f"{env_key}={env_val}")],
-        "-v", f"{mp}/home:/home/agent",
-        "-v", f"{mp}/workspace:{cpath_workspace(slug)}",
-        "-v", f"{mp}/scratch:{cpath_data()}/scratch/{slug}",
+        "-v", f"{home}:/home/agent",
+        "-v", f"{ws}:{cpath_workspace(slug)}",
+        "-v", f"{scratch}:{cpath_data()}/scratch/{slug}",
         "-v", f"{BACKEND_DIR}:/opt/orgtree-backend:ro",
         image_tag, "sleep", "infinity", timeout=300)
     if r.returncode != 0:
@@ -664,100 +449,6 @@ def ensure_container(org: Org) -> str:
                            + (r.stderr or r.stdout)[-500:])
     _heal_ownership(name)
     return name
-
-
-def try_apply_pending_resize(org: Org) -> str | None:
-    """Apply a doc-persisted pending shrink (user design: record the request,
-    apply when the org's container is down anyway, show the divergence until
-    then). CALLER guarantees the container is down. Returns None when there
-    was nothing pending or it applied; a human-readable reason when the
-    shrink was KEPT PENDING (refuse-not-guess: usage may have outgrown the
-    target while it waited — never partially apply, say how many MB to free)."""
-    from . import disk as dsk
-    slug = org.d["slug"]
-    d = dict(org.d.get("disk") or {})
-    pend = int(d.get("pending_size_mb") or 0)
-    if not pend:
-        return None
-    dsk.mount(slug)                      # need a fresh usage reading
-    du = dsk.usage(slug, max_age=0.0)
-    # ~90% fit: resize2fs needs working room, and landing at 100% would be
-    # an instant hard-full
-    if du and du[0] > pend * 1048576 * 0.9:
-        need = int((du[0] - pend * 1048576 * 0.9) / 1048576) + 1
-        return (f"pending shrink to {pend} MB not applied: usage is "
-                f"{du[0] // 1048576} MB — free about {need} MB first")
-    dsk.shrink_image(slug, pend)
-    dsk.mount(slug)
-    with store.DOC_LOCK:
-        o2 = store.load_org(slug)
-        d2 = dict(o2.d.get("disk") or {})
-        d2["size_mb"] = pend
-        d2.pop("pending_size_mb", None)
-        o2.d["disk"] = d2
-        store.save_org(o2)
-    print(f"[orgtree] org {slug!r}: pending shrink applied — disk is now "
-          f"{pend} MB")
-    return None
-
-
-def stop_container(slug: str) -> None:
-    """Storage-breach lever: halt the org's container so volume growth stops.
-    20 s grace lets the CLI flush transcript appends (they live on the home
-    bind, which stays writable — engine state is never starved by the cap)."""
-    try:
-        _docker("stop", "-t", "20", container_name(slug), timeout=60)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-
-
-_vol_usage_cache: dict[str, tuple[float, int]] = {}
-
-
-def _parse_size(s: str) -> int:
-    """Docker's human sizes ("5.34MB", "1.06GB", "0B") — SI decimal units."""
-    s = (s or "").strip()
-    units = {"B": 1, "KB": 10**3, "MB": 10**6, "GB": 10**9, "TB": 10**12}
-    for u, mul in sorted(units.items(), key=lambda kv: -len(kv[0])):
-        if s.upper().endswith(u):
-            try:
-                return int(float(s[:-len(u)]) * mul)
-            except ValueError:
-                return 0
-    try:
-        return int(float(s))
-    except ValueError:
-        return 0
-
-
-def sandbox_volumes_bytes(slug: str, max_age: float = 60.0) -> int | None:
-    """Bytes in the org's system volumes, measured DAEMON-SIDE (`docker system
-    df -v`), so it works with the container stopped — the auto-unblock path
-    must keep measuring after a breach stop. Returns None on TIMEOUT, which
-    callers treat as a breach (fail closed: an adversary can make the size
-    walk pathologically slow with millions of tiny files); returns 0 when
-    docker is unavailable (nothing can be growing either)."""
-    hit = _vol_usage_cache.get(slug)
-    if hit and time.time() - hit[0] < max_age:
-        return hit[1]
-    try:
-        r = _docker("system", "df", "-v", "--format", "{{json .Volumes}}",
-                    timeout=120)
-    except subprocess.TimeoutExpired:
-        return None
-    except OSError:
-        return 0
-    if r.returncode != 0:
-        return 0
-    try:
-        vols = json.loads(r.stdout or "[]")
-    except json.JSONDecodeError:
-        return 0
-    prefix = f"orgtree-sys-{slug}-"
-    total = sum(_parse_size(v.get("Size", "0B")) for v in vols
-                if str(v.get("Name", "")).startswith(prefix))
-    _vol_usage_cache[slug] = (time.time(), total)
-    return total
 
 
 def exec_argv(name: str, cwd: str,
@@ -786,9 +477,9 @@ _dead: set[str] = set()   # slugs deleted mid-warm-up (create/delete race)
 
 def remove(slug: str) -> None:
     """Org deleted: tear the container AND its system volumes down (orphaned
-    volumes are unmeasured GBs — exactly what the disk bound exists to stop;
-    the org's FILES survive via the trash-rename of its doc + host dirs, but
-    container system state follows the container). The tombstone closes the
+    volumes are GBs nobody would reclaim; the org's FILES survive via the
+    trash-rename of its doc + host dirs, but container system state follows
+    the container). The tombstone closes the
     warm() race: deleting an org while its background prebuild was still
     creating the container used to leak it (rm -f fired before the container
     existed; observed in the wild)."""
@@ -799,12 +490,6 @@ def remove(slug: str) -> None:
                 timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         pass
-    from . import disk as dsk
-    try:
-        dsk.destroy(slug)
-    except Exception:                                    # noqa: BLE001
-        pass
-    _disk_flag.pop(slug, None)
 
 
 def warm(org: Org) -> None:

@@ -124,7 +124,6 @@ CHATQ: list[tuple[str, str, str]] = []
 supervisor.chatq_send = lambda slug, chat, text: (CHATQ.append((slug, chat, text))
                                                   or True)
 sandbox.warm = lambda org: None
-sandbox.vm_disk_cap_mib = lambda: None
 
 PASS = 0
 GAPS = 0

@@ -785,23 +785,15 @@ class OrgDoc(TypedDict):
     org_inbox: NotRequired[list[OrgInboxEntry]]
     org_inbox_read: NotRequired[int]
     kiosk: NotRequired[KioskCfg | None]
-    sandbox: NotRequired[dict[str, Any]]    # api: {enabled, secret, limit_mb?}
-    sandbox_vols_base: NotRequired[int]     # HISTORICAL (pre-disk legacy
-                                            # enforcement, retired D-063) —
+    sandbox: NotRequired[dict[str, Any]]    # api: {enabled, secret}
+    sandbox_vols_base: NotRequired[int]     # HISTORICAL (retired D-063) —
                                             # system-volume image seed (bytes);
-                                            # storage accounting charges growth only
+                                            # nothing reads it
     fable_lock: NotRequired[dict[str, Any] | None]
     spend_frozen: NotRequired[bool]
-    storage_frozen: NotRequired[bool]   # HISTORICAL (pre-disk legacy breach) —
-                                        # never set since D-063; cleared at
-                                        # disk migration
-    storage_blocked: NotRequired[bool]  # ACL block (legacy) / turn pause (disk ≥90%)
-    storage_full: NotRequired[bool]     # disk ≥99% — the persistent UI alert state
-    disk: NotRequired[dict[str, Any]]   # {size_mb, migrated_at,
-                                        #  pending_size_mb?} — org rides its
-                                        # virtual disk (sandbox.migrate_to_disk);
-                                        # pending = staged shrink, applied when
-                                        # the org's container is next down
+    storage_frozen: NotRequired[bool]   # HISTORICAL (legacy sandbox breach) —
+                                        # never set since D-063
+    storage_blocked: NotRequired[bool]  # unsandboxed kiosk over its storage limit
     storage_warned: NotRequired[bool]
     auto_resume: NotRequired[bool]
     auto_resume_last: NotRequired[float]

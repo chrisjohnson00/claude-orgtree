@@ -31,7 +31,7 @@ Every shape below starts here.
 | **Python 3.11+** | |
 | **Node.js 18+** | builds the frontend and runs the JavaScript-based provider CLIs where needed |
 | **Linux** | the host OS |
-| **Docker Desktop, WSL2 backend** | only for **sandboxed orgs** (kiosks default the sandbox on) — each org's virtual disk is loop-mounted inside the docker-desktop WSL distro, read via `\\wsl.localhost` |
+| **Docker** | only for **sandboxed orgs** (kiosks default the sandbox on) — a running daemon the backend's user can reach |
 
 ### Install
 
@@ -204,23 +204,23 @@ see §4).
 
 ### Sandboxing — requirements and limitations
 
-Requires **Docker Desktop with the WSL2 backend** on Windows (see §0). One container per org; one
-capped ext4 virtual disk holds everything persistent, enforced by `ENOSPC` itself — a soft alert at
-90% full, a persistent one at 99% (`configuration.md` §④).
+Requires a running **Docker** daemon (see §0). One container per org. System dirs are per-org named
+volumes; the agent home, workspace, and scratch are host bind mounts under the data root. Sandboxed
+orgs have no storage cap.
 
 | env var | default | what it does |
 |---|---|---|
-| `ORGTREE_SANDBOX_IMAGE` | `orgtree-sandbox` | container image tag (`sandbox.py:52`) |
-| `ORGTREE_SANDBOX_MEM` | `4g` | container memory (`sandbox.py:58`) |
-| `ORGTREE_SANDBOX_CPUS` | `2` | container CPUs (`sandbox.py:59`) |
-| `ORGTREE_SANDBOX_TMP` | `1g` | `/tmp` tmpfs, counts against memory (`sandbox.py:77`) |
-| `ORGTREE_SANDBOX_RUN` | `64m` | `/run` tmpfs (`sandbox.py:78`) |
-| `ORGTREE_SANDBOX_DISK_MB` | `20480` | virtual-disk size when the org doesn't specify one (`sandbox.py:81`) |
-| `ORGTREE_BRIDGE_PORT` | `7362` | the BridgeGateway — the *one* door out of a container (`sandbox.py:57`) |
+| `ORGTREE_SANDBOX_IMAGE` | `orgtree-sandbox` | container image tag (`sandbox.py:49`) |
+| `ORGTREE_SANDBOX_MEM` | `4g` | container memory (`sandbox.py:55`) |
+| `ORGTREE_SANDBOX_CPUS` | `2` | container CPUs (`sandbox.py:56`) |
+| `ORGTREE_SANDBOX_TMP` | `1g` | `/tmp` tmpfs, counts against memory (`sandbox.py:62`) |
+| `ORGTREE_SANDBOX_RUN` | `64m` | `/run` tmpfs (`sandbox.py:63`) |
+| `ORGTREE_BRIDGE_PORT` | `7362` | the BridgeGateway — the *one* door out of a container (`sandbox.py:54`) |
 | `ORGTREE_SANDBOX_MCP` | off | EXPERIMENTAL — allow MCP servers inside a sandbox (`supervisor.py:479`) |
 
-**What this does and doesn't protect against:** the container isolates the filesystem (the ext4
-virtual disk is the *only* persistent storage a sandboxed agent can reach) and network egress runs
+**What this does and doesn't protect against:** the container isolates the filesystem (its own
+volumes and the org's home, workspace, and scratch binds are the *only* persistent storage a
+sandboxed agent can reach) and network egress runs
 through the single BridgeGateway door. It is not a claim about model behavior or prompt-injection
 resistance — it bounds *blast radius on the host*, not what the agent might be tricked into doing
 within its own sandbox.

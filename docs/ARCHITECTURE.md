@@ -433,24 +433,18 @@ ledger, supervisor, the gateways, or the canvas.
   every other dir grant is stored by the ledger, shown granted in the UI,
   and silently dropped by `_build_cmd` (host paths do not exist in the
   container). A control that does nothing is displayed as if it worked.
-- **The org disk mounts EXACTLY ONCE** (by the docker-desktop distro); a
-  second mount of the same image is silent filesystem corruption. Verify the
-  sentinel before every container start — Docker CREATES AN EMPTY DIR for a
-  missing bind source, and an agent then rebuilds files into a divergent
-  phantom workspace.
-- **Two storage-enforcement models coexist** in supervisor.py: disk orgs
-  (tiered: 80 warn / 90 turn-pause / 85 clear / 99 full; ENOSPC is the hard
-  cap; NO container stop) and legacy volume-layout orgs (icacls deny +
-  stop-and-freeze). Patch the right one; the module comment era matters.
-- **Sandboxed transcripts live ON the org disk**, not under
-  `<data>/sandboxes/` — for any migrated org the agent home (transcripts
-  included) is on the ext4 image via `\\wsl.localhost`;
-  `<data>/sandboxes/<slug>/` is only the frozen pre-migration rollback
-  copy, and reading it yields *silently stale* transcripts — worse than
-  missing.
-- **`disk.py` has no platform guard** — off Windows a sandboxed org dies
-  with an unhandled `FileNotFoundError: 'wsl'` (and kiosks sandbox by
-  default). Host mode is genuinely cross-platform.
+- **Sandboxed orgs have no storage cap.** System dirs are per-org named
+  volumes; the agent home (`<data>/sandboxes/<slug>/home`, transcripts
+  included), the workspace, and scratch are host bind mounts. Docker
+  CREATES AN EMPTY DIR for a missing bind source, which is why
+  `ensure_container` refuses an org with no workspace recorded.
+- **Storage enforcement is for unsandboxed kiosks only**: `storage_check`
+  walks workspace + scratch, warns near the limit, and sets
+  `storage_blocked` over it. It returns early for sandboxed orgs.
+- **Bind-mount ownership is uid-sensitive.** The image's `agent` is uid
+  1001; host dirs are created by the backend's uid. `_heal_ownership` and
+  `chown_agent` hand paths to `agent`, which the backend then cannot write
+  from the host unless the uids match.
 - **The repo path is not the data path**: the repo is the git checkout;
   `~/orgtree/` is live DATA (org docs, `.port`, the pinned CLI) and must
   not be "corrected" to match. Commit SHAs predating the clean import
