@@ -616,6 +616,62 @@ check("parked + limited · superior copy and top-level user notice == old text; 
       _parked_and_limited)
 
 
+def rig_titled():
+    """boss → "Kid Worker" (id kid-worker): a report whose title differs from its id,
+    which rig2's title == id nodes cannot tell apart."""
+    _n[0] += 1
+    slug = f"evprod{_n[0]}"
+    o = Org.create(slug, dirs=[_TMP])
+    o.hire(USER, None, "opus", 20, "boss")
+    o.hire("boss", "boss", "haiku", 5, "Kid Worker", add_dirs=[],
+           tools={"bash": True, "web": False, "edit": False, "subagents": False, "mcp": []},
+           org_visibility="team", charter="runtime fixture")
+    assert "kid-worker" in o.nodes and o.node("kid-worker")["title"] == "Kid Worker", \
+        list(o.nodes)
+    store.save_org(o)
+    return slug
+
+
+def _title_not_id():
+    kid, title, both = "kid-worker", "Kid Worker", "Kid Worker (kid-worker)"
+    slug = rig_titled()
+    assert store.load_org(slug).node_ref(kid)["name"] == title
+    o = store.load_org(slug)
+    segs = S._state_segments(o, "boss", "[ORG STATE]", {}, "")
+    snap = events.decode_ev(segs[0]["event"])["snapshot"]
+    assert [r["name"] for r in snap["reports"]] == [title], snap["reports"]
+    kind = next(iter(S._PARKED_KINDS))
+    o.node(kid)["frozen"] = {"cause": "auth", "auth": True, "error": "401 nope"}
+    store.save_org(o)
+    with Quiet():
+        assert S._parked_announce(slug, kid, kind, "claude/primary") is True
+    sup = box_last(slug, "boss")
+    sev = decoded(sup)
+    assert both in sup["body"], sup["body"]
+    assert sev["report_name"] == title and sev["object"]["name"] == title, sev
+    slug = rig_titled()
+    o = store.load_org(slug)
+    o.node(kid)["frozen"] = {"limit": True, "until": "2026-09-07T00:00:00Z", "error": "429"}
+    store.save_org(o)
+    with Quiet():
+        assert S._limit_announce(slug, kid, "claude/primary") is True
+    sup = box_last(slug, "boss")
+    assert both in sup["body"] and decoded(sup)["report_name"] == title, sup["body"]
+    slug = rig_titled()
+    with Quiet():
+        assert S._turn_abandoned(slug, kid, "idle watchdog", "boom") is True
+    sup = box_last(slug, "boss")
+    assert both in sup["body"] and decoded(sup)["report_name"] == title, sup["body"]
+    with Quiet():
+        S._retry_exhausted(slug, kid, 3, "boom", "net")
+    sup = box_last(slug, "boss")
+    assert both in sup["body"] and decoded(sup)["report_name"] == title, sup["body"]
+
+
+check("display name · node refs, org-state snapshot and report notices carry the node's "
+      "title, not its slug id", _title_not_id)
+
+
 def _orphans():
     slug = rig2()
     orphans = [(f"t{i}", f"desc {i}", (f"/out/{i}.txt" if i % 2 else "")) for i in range(23)]

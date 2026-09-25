@@ -6023,7 +6023,7 @@ def _state_segments(org: Org, nid: str, state_text: str, facts: Mapping[str, Any
         free = 0.0
     snapshot = {
         "seq": facts.get("seq"), "at": now_iso(),
-        "reports": [{"id": k, "name": str(org.nodes[k].get("name") or k),
+        "reports": [{"id": k, "name": str(org.nodes[k].get("title") or k),
                      "tier": str(org.nodes[k].get("model") or ""),
                      "state": str(org.nodes[k].get("state") or "")} for k in kids],
         "peers": list(sibs),
@@ -6883,7 +6883,7 @@ def _node_ref(org: Org, nid: str) -> dict[str, Any]:
     """The canonical NodeRef of a node as the producers mint it (design §2)."""
     n = org.nodes.get(nid) or {}
     return {"kind": "node", "org": str(org.d.get("slug") or ""), "id": nid,
-            "name": str(n.get("name") or nid), "generation": int(n.get("generation") or 0)}
+            "name": str(n.get("title") or nid), "generation": int(n.get("generation") or 0)}
 
 
 #: the engine's own hand as an event actor (design I3)
@@ -17512,7 +17512,7 @@ def _turn_abandoned(slug: str, nid: str, door: str, err: str) -> bool:
             org = store.load_org(slug)
             if nid not in org.nodes or org.node(nid)["state"] != "live":
                 return False
-            name = str(org.node(nid).get("name") or nid)
+            name = str(org.node(nid).get("title") or nid)
             sup = str(org.node(nid).get("parent") or "")
             # typed (family runtime_recovery): the node's own copy is the frozen
             # rendering of runtime.turn_failed_terminal (test_events_producers §R)
@@ -17666,7 +17666,7 @@ def _retry_exhausted(slug: str, nid: str, run: int, err: str,
             org = store.load_org(slug)
             if nid not in org.nodes or org.node(nid)["state"] != "live":
                 return
-            name = str(org.node(nid).get("name") or nid)
+            name = str(org.node(nid).get("title") or nid)
             sup = str(org.node(nid).get("parent") or "")
             # typed (family runtime_recovery): frozen renderings of
             # runtime.turn_failed_repeated / runtime.report_stalled (test_events_producers §R)
@@ -17856,7 +17856,7 @@ def _parked_announce(slug: str, nid: str, kind: str, lane: str) -> bool:
                 return False
             run = int(n.get("parked_run") or 0) + 1
             n["parked_run"] = run
-            name = str(n.get("name") or nid)
+            name = str(n.get("title") or nid)
             err = str(fz.get("error") or "")[:300]
             if run != 1:
                 store.save_org(org)
@@ -17983,7 +17983,7 @@ def _limit_announce(slug: str, nid: str, lane: str,
                 return False
             run = int(n.get("limit_run") or 0) + 1
             n["limit_run"] = run
-            name = str(n.get("name") or nid)
+            name = str(n.get("title") or nid)
             err = str(fz.get("error") or "")[:300]
             # ⚠ the count is advanced on EVERY freeze, the message only on the
             # transition to 1. Bumping and announcing together would make the
