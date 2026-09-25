@@ -49,8 +49,11 @@ BACKEND_DIR: str = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."
 IMAGE: str = os.environ.get("ORGTREE_SANDBOX_IMAGE", "orgtree-sandbox")
 # bump when sandbox/Dockerfile changes: the tag carries the revision, so
 # existing images rebuild and running containers recreate on their next turn
-# (r2: passwordless sudo — agents hold root inside the container)
-IMG_REV: str = "r2"
+# (r3: `agent` built with the host uid/gid)
+IMG_REV: str = "r3"
+# `agent`'s ids when the backend runs as root: an image `agent` of uid 0
+# would be root, and the CLI refuses to run as root
+ROOT_FALLBACK_IDS: tuple[int, int] = (1001, 1001)
 BRIDGE_PORT: int = int(os.environ.get("ORGTREE_BRIDGE_PORT", "7362") or 0)
 MEM: str = os.environ.get("ORGTREE_SANDBOX_MEM", "4g")
 CPUS: str = os.environ.get("ORGTREE_SANDBOX_CPUS", "2")
@@ -230,12 +233,25 @@ def bridge_file_config(org: Org) -> dict[str, str]:
     return {"url": bridge_url(), "secret": sandbox_secret(org)}
 
 
+def agent_ids() -> tuple[int, int]:
+    """The (uid, gid) the image's `agent` is built with: the backend's own,
+    so both sides of every bind mount agree on ownership."""
+    uid = os.getuid()
+    return ROOT_FALLBACK_IDS if uid == 0 else (uid, os.getgid())
+
+
+def _agent_owner() -> str:
+    # numeric: `agent`'s primary group may be a reused host group (`users`),
+    # so no group named `agent` need exist
+    return "%d:%d" % agent_ids()
+
+
 def chown_agent(org: Org, nid: str, *rel: str) -> None:
     """Hand a backend-minted path inside a sandboxed org to the agent.
 
-    The backend writes through the host bind mounts as its own uid, which
-    the container does not map to `agent` (uid 1001) — the CLI runs as
-    `agent`. A root-owned `outbox/` or `uploads/` reads to the
+    `agent` shares the backend's uid, so this is a no-op in the common case.
+    It matters when the backend runs as root (`agent` falls back to
+    ROOT_FALLBACK_IDS): a root-owned `outbox/` or `uploads/` reads to the
     agent as "my scratch is broken" (live bug 2026-08-04, kiosk `vnuser`).
     Best-effort by design: with the container down the exec fails silently,
     and the start-time heal in ensure_container covers it instead."""
@@ -248,7 +264,7 @@ def chown_agent(org: Org, nid: str, *rel: str) -> None:
         # chown fails "Operation not permitted" — silently, given the swallow
         # below (caught live 2026-08-05 healing vnuser by hand)
         _docker("exec", "-u", "root", container_name(slug),
-                "chown", "-R", "agent:agent", target, timeout=30)
+                "chown", "-R", _agent_owner(), target, timeout=30)
     except Exception:                                        # noqa: BLE001
         pass
 
@@ -263,35 +279,50 @@ def chown_home_path(org: Org, host_path: str) -> None:
     ~/.claude at all. A session file the backend mints there — the cut that
     turns a CLI-compacted generation into a consultable bearer — lands
     root-owned, and the agent that rehires it can read but not append, so the
-    bearer fails on the first write of its resumed turn.
+    bearer fails on the first write of its resumed turn (with a root backend;
+    see chown_agent).
 
     Best-effort on the same terms as chown_agent: a host path outside this
     org's sandbox home, or a container that is down, is a silent no-op."""
     if not is_sandboxed(org):
         return
     slug = org.d["slug"]
-    try:
-        rel = os.path.relpath(host_path, sandbox_home(slug))
-    except ValueError:              # different drive — not ours to touch
-        return
+    rel = os.path.relpath(host_path, sandbox_home(slug))
     if rel.startswith(".."):        # outside the container home
         return
-    target = "/home/agent/" + rel.replace("\\", "/")
+    target = "/home/agent/" + rel
     try:
         _docker("exec", "-u", "root", container_name(slug),
-                "chown", "agent:agent", target, timeout=30)
+                "chown", _agent_owner(), target, timeout=30)
     except Exception:                                        # noqa: BLE001
         pass
 
 
 def _heal_ownership(name: str) -> None:
-    """Every path the backend minted while the container was DOWN is
-    root-owned (see chown_agent) — hand the whole data tree back to the agent
-    at container start. Also fixes Docker's own root-owned mount scaffolding
-    (/home/agent/orgtree, …/scratch, …/workspaces), which the agent sees when
-    it looks one level above its own folder."""
-    _docker("exec", "-u", "root", name, "chown", "-R", "agent:agent",
+    """Hand the whole data tree to the agent at container start. Fixes
+    Docker's own root-owned mount scaffolding (/home/agent/orgtree, …/scratch,
+    …/workspaces), which the agent sees when it looks one level above its own
+    folder, and anything a root backend minted while the container was DOWN
+    (see chown_agent)."""
+    _docker("exec", "-u", "root", name, "chown", "-R", _agent_owner(),
             cpath_data(), timeout=120)
+
+
+def _sync_agent_ids(slug: str, image_tag: str) -> None:
+    """Give `agent` the current ids inside the org's /etc volume. Docker seeds
+    a named volume from the image only once, so an org created under another
+    uid (or an older image) keeps its old /etc/passwd across a rebuild. Runs
+    in a throwaway container: `usermod` refuses while the user has processes,
+    and the org container's idle `sleep` is one. The home bind lets `usermod`
+    re-own the files it holds."""
+    r = _docker("run", "--rm", "-u", "root",
+                "-v", f"{sys_volume(slug, 'etc')}:/etc",
+                "-v", f"{sandbox_home(slug)}:/home/agent",
+                image_tag, "orgtree-agent-ids", *map(str, agent_ids()),
+                timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError("sandbox agent uid sync failed: "
+                           + (r.stderr or r.stdout)[-500:])
 
 
 def _docker(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
@@ -310,7 +341,11 @@ def _desired_image_tag() -> str:
     """Return the image tag to run without building or pulling it."""
     from . import supervisor        # lazy — supervisor imports this module
     ver = supervisor.cli_version()
-    return f"{IMAGE}:{ver}-{IMG_REV}" if ver != "unknown" else IMAGE
+    if ver == "unknown":
+        return IMAGE
+    uid, gid = agent_ids()
+    # the ids are in the tag so a host uid change rebuilds and recreates
+    return f"{IMAGE}:{ver}-{IMG_REV}-u{uid}-g{gid}"
 
 
 def ensure_image() -> str:
@@ -326,7 +361,10 @@ def ensure_image() -> str:
     with _build_lock:
         if _docker("image", "inspect", tag).returncode == 0:
             return tag
-        args = ["build", "-t", tag]
+        uid, gid = agent_ids()
+        args = ["build", "-t", tag,
+                "--build-arg", f"AGENT_UID={uid}",
+                "--build-arg", f"AGENT_GID={gid}"]
         if ver != "unknown":
             args += ["--build-arg", f"CLAUDE_VERSION={ver}"]
         r = _docker(*args, os.path.join(REPO_ROOT, "sandbox"), timeout=1200)
@@ -343,8 +381,9 @@ def ensure_container(org: Org) -> str:
     k = org.d.get("kiosk") or {}
     name = container_name(slug)
     if not docker_ok():
-        raise RuntimeError("Docker is not running — start Docker Desktop "
-                           "(kiosk sandboxes run their turns in containers)")
+        raise RuntimeError("Docker is not running — start the docker service "
+                           "(`sudo systemctl start docker`); sandboxed orgs "
+                           "run their turns in containers")
     from . import supervisor        # lazy — supervisor imports this module
     want = _desired_image_tag()
     ins = _docker("container", "inspect", "-f",
@@ -403,8 +442,7 @@ def ensure_container(org: Org) -> str:
         if not os.path.isfile(src):
             raise RuntimeError("subscription mode: no Claude credentials found "
                                "at ~/.claude/.credentials.json")
-        import shutil as _sh
-        _sh.copy2(src, os.path.join(home, ".claude", ".credentials.json"))
+        shutil.copy2(src, os.path.join(home, ".claude", ".credentials.json"))
         cfg = os.path.join(home, ".claude.json")
         if not os.path.exists(cfg):
             with open(cfg, "w", encoding="utf-8") as f:
@@ -422,6 +460,7 @@ def ensure_container(org: Org) -> str:
     with open(os.path.join(home, "orgtree", ".bridge"), "w",
               encoding="utf-8") as f:
         json.dump(bridge_doc, f)
+    _sync_agent_ids(slug, image_tag)
     r = _docker(
         "run", "-d", "--name", name,
         "--label", f"orgtree.layout={LAYOUT}",
