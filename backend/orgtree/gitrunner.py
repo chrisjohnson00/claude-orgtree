@@ -34,15 +34,10 @@ def redact(value: str) -> str:
 
 
 def _stop(proc: subprocess.Popen[bytes]) -> None:
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
-    else:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     if proc.poll() is None:
         proc.kill()
     proc.wait(timeout=5)
@@ -68,8 +63,7 @@ def run(cwd: str, args: list[str], *, timeout: float = 12,
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             proc = subprocess.Popen(argv, cwd=cwd, env=env, shell=False,
                                     stdin=subprocess.DEVNULL, stdout=out, stderr=err,
-                                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-                                    start_new_session=os.name != "nt")
+                                    start_new_session=True)
             deadline = time.monotonic() + timeout
             failure = None
             while proc.poll() is None:

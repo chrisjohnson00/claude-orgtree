@@ -25,7 +25,6 @@ Hermetic: in-memory orgs, no data root, no port, no CLI, no network.
 from __future__ import annotations
 
 import os
-import re
 import sys
 import tempfile
 import traceback
@@ -54,9 +53,6 @@ os.environ["HOME"] = _TMP
 
 from orgtree import supervisor                                   # noqa: E402
 from orgtree.ledger import Org, USER                             # noqa: E402
-
-_REPO = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                      "..", ".."))
 
 PASS = 0
 FAIL: list[tuple[str, str]] = []
@@ -327,19 +323,6 @@ def sec_injection() -> None:
     # structurally one line no matter the caller.
     check("inject · the quoted gist cannot fabricate a mail header",
           _gist_newlines_survive)
-
-    def _frontend_still_collapses():
-        src = open(os.path.join(_REPO, "frontend", "src", "App.tsx"),
-                   encoding="utf-8").read()
-        i = src.find("gist: (m.body")
-        assert i > 0, "the reply snapshot's gist is no longer built here"
-        assert re.search(r"replace\(/\\s\+/g,\s*' '\)", src[i:i + 200]), (
-            "App.tsx no longer collapses whitespace when building the gist — "
-            "the only thing keeping newlines out of the block is gone")
-    check("inject · DRIFT GUARD: the composer still collapses whitespace into "
-          "the gist (defence-in-depth since 2026-08-05 — the server now "
-          "collapses too, but the client copy keeps the composer preview "
-          "honest)", _frontend_still_collapses)
 
     def _public_port_reachable():
         from orgtree import api

@@ -332,7 +332,6 @@ LEAVES: Final[dict[str, dict[str, Any]]] = {
                                grant_new=F("str?", B, True), committed=F("str?", B, True)),
     "lifecycle.renamed": leaf("lifecycle", "NodeRef", old=F("str", B, True),
                               new=F("str", B, True), by=F("str", B, True)),
-    "lifecycle.disk_migrated": leaf("lifecycle", "OrgRef", floored_from=F("str", B, True)),
     "policy.fable_flagged": leaf("lifecycle", "NodeRef",
                                  audience=F("L[parent|peer|user]", B, True),
                                  node=F("str", B, True),
@@ -394,7 +393,7 @@ LEAVES: Final[dict[str, dict[str, Any]]] = {
     "runtime.storage": leaf("runtime_recovery", "OrgRef",
                             level=F("L[heads_up|over|cleared]", B, True),
                             used_mb=F("float", B, True), cap_mb=F("float?", B, True),
-                            scope=F("L[disk|storage]", B, True)),
+                            scope=F("L[storage]", B, True)),
     "runtime.token_expiry": leaf("runtime_recovery", "OrgRef", days=F("float", B, True)),
     "runtime.delivery_unread": leaf("runtime_recovery", "MailRef", to=F("str", B, True),
                                     waited=F("str", B, True), boundary_for=F("str?", B, True)),
@@ -432,7 +431,7 @@ LEAVES: Final[dict[str, dict[str, Any]]] = {
         reason=F("L[user_mail|agent_mail|notice|participation|docket_reply|ask_answer|batch|"
                  "credit_decision|audience|rehire_waited|reconcile_waited|freeze_lifted|"
                  "remote_released|unfrozen_by_switch|external_inbox|watchdog|watchdog_quiet|"
-                 "storage|failure|checkup|reminder]?", M, False)),
+                 "storage|failure|checkup|reminder|unstuck]?", M, False)),
     "context.drive_restart_interrupted": leaf("context_change", "BuildRef",
                                               text=F("str", M, False)),
     "context.drive_restart_wake": leaf("context_change", "BuildRef", text=F("str", M, False),

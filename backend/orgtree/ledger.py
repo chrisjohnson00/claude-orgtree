@@ -34,7 +34,7 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Final, Literal, cast
 
-from . import clipin, deployment, events, events_render, opreceipts
+from . import clipin, events, events_render, opreceipts
 from .schema import (AudienceGrant, DirGrant, FrozenInfo, MailEntry, NodeDoc, NodeScope,
                      NoticeEntry, NoticeLogEntry, OrgDoc, OrgInboxEntry, ToolGrant,
                      UserMailEntry, WorkActor, WorkItem, WorkStage)
@@ -619,7 +619,7 @@ class Org:
         self.d.setdefault("cascade_hire", True)
         self.d.setdefault("cascade_alloc", True)
         self.d.setdefault("credit_requests", [])     # top-level asks to the user
-        self.d.setdefault("compact_at", 0.80)        # compaction ratio, ≤ 0.95 hard
+        self.d.setdefault("compact_at", 0.50)        # compaction ratio, ≤ 0.95 hard
         # kiosk v2 (user vision): per-org public exposure via a preauthenticated
         # secret-URL token; caps live here, not in env vars. None = never a kiosk.
         self.d.setdefault("kiosk", None)             # {enabled, token, credits,
@@ -1047,7 +1047,7 @@ class Org:
             "max_top_grant": 1000,                # UI slider cap for user-level hires
             "default_top_grant": 50,              # pre-filled grant for top-level hires
             "credit_requests": [],                # §: top-level asks to the user
-            "compact_at": 0.80,                   # compaction ratio (≤ 0.95 hard cap)
+            "compact_at": 0.50,                   # compaction ratio (≤ 0.95 hard cap)
             "fable_limit_policy": "halt",         # halt | opus | dissolve (user ruling)
             "fable_filter_policy": "halt",        # halt | opus | auto-autopsy — filter flags (user spec)
             "fable_filter_model": "opus",         # model tier when policy == auto-autopsy
@@ -4774,15 +4774,21 @@ class Org:
                  f'directly.' if retained else "")
         aud_b = (f' "{a}" keeps a standing audience with you.'
                  if retained else "")
-        nested = bool(p_a == p_b)
+        # p_a == p_b: a and b were direct-report SIBLINGS, so their parent
+        # and peer audiences are identical and need only one notification
+        # pass. This is distinct from `nested` (is_ancestor(a, b), :4595),
+        # which one commit's local shadowed — collapsing both concepts onto
+        # one name broke the notify split below and the returned/logged
+        # "nested" (seat-topology §1).
+        same_parent = bool(p_a == p_b)
 
         def _swap(role: str, node: str, *, reports_to: str | None = None,
                   grant_after: str | None = None, note: str | None = None) -> dict[str, Any]:
             return _mint("lifecycle.seat_swapped", actor_of(actor), self.node_ref(node),
-                         a=a, b=b, role=role, nested=nested, by=actor,
+                         a=a, b=b, role=role, nested=same_parent, by=actor,
                          reports_to_after=reports_to, grant_after=grant_after,
                          audience_note=(note or None))
-        if nested:
+        if same_parent:
             self._notify_ev([p for p in [p_a] if p != actor], _swap("parent_of_a", a))
             self._notify_ev([p for p in prior_peers_a if p != actor and p != b],
                             _swap("peer_of_a", a))
@@ -6630,8 +6636,8 @@ class Org:
 
         `shell` (2026-08-22) opts a command/stream dog out of the platform's
         native shell. ABSENT — and every dog armed before this existed is
-        absent — means native, i.e. `shell=True`: cmd.exe on a Windows host,
-        exactly as before. "bash" runs `bash -lc` instead, for agents who
+        absent — means native, i.e. `shell=True`: /bin/sh, exactly as
+        before. "bash" runs `bash -lc` instead, for agents who
         want the POSIX idiom the old tool card wrongly implied they had.
 
         ⚠ The API boundary REFUSES "bash" when no bash can be found, rather
@@ -6927,7 +6933,7 @@ class Org:
     def node_ref(self, nid: str) -> dict[str, Any]:
         n = self.nodes.get(nid) or {}
         return {"kind": "node", "org": str(self.d.get("slug") or ""), "id": nid,
-                "name": str(n.get("name") or nid),
+                "name": str(n.get("title") or nid),
                 "generation": int(n.get("generation") or 0)}
 
     def work_item_ref(self, it: Mapping[str, Any]) -> dict[str, Any]:
@@ -8197,11 +8203,6 @@ class Org:
         machine-wide restart a few minutes later. Each caller still logs its
         OWN event, because "restarted the machine" and "armed a restart" are
         different facts about who did what."""
-        if not deployment.current_policy().allow_agent_restart:
-            raise LedgerError(
-                "the frozen deployment profile disables agent-triggered "
-                "self-update, self-restart, and primed restart; deploy this "
-                "installation through an operator-controlled path")
         self._require_live(nid)
         if self.is_kiosk:
             raise LedgerError(f"kiosk orgs are sealed — no {what}")
@@ -9443,7 +9444,7 @@ class Org:
             "dirs": self.d["dirs"],
             "max_top_grant": self.d.get("max_top_grant", 1000),
             "default_top_grant": self.d.get("default_top_grant", 50),
-            "compact_at": self.d.get("compact_at", 0.80),
+            "compact_at": self.d.get("compact_at", 0.50),
             "default_tools": self.d.get("default_tools"),
             "default_visibility": self.d.get("default_visibility", "full"),
             # the mode NEW hires are born with — editable post-creation

@@ -128,26 +128,35 @@ const queue = (s: FakeServer, body: string,
   } as PendingMail)
 }
 
-/** the SAME message after delivery: the transcript replays the body with the
- *  envelope's [ATTACHED FILE] lines, which the bubble parses back out */
+/** the SAME message after delivery: the transcript now carries a typed `mail`
+ *  segment (the envelope's `ev`-free WireMailRow shape — the desk's EventCard
+ *  renders its body the same way whether the row is pending or settled, and
+ *  its `attachments` field is what makes a real `.attach-row`, not a
+ *  `[ATTACHED FILE: …]` marker line sniffed back out of plain text). */
 const delivered = (s: FakeServer, body: string, names: string[] = []): void => {
-  s.userMsg([body, ...names.map((n) =>
-    `[ATTACHED FILE: uploads/${n} (12 KB) — in your working folder]`)]
-    .filter(Boolean).join('\n'))
+  const m = s.userMsg(body)
+  m.segments = [{ kind: 'mail', rows: [{ id: 'm-delivered', from: '@user', kind: 'message',
+    at: new Date(Date.now()).toISOString(), body, attachments: names.map(att) }] }]
 }
 
 // ── the shared property ─────────────────────────────────────────────────────
 /** The message content lives directly in the delivered bubble; the pending
  *  bubble nests it one level so the delivery tag can sit beside it without
- *  being part of the message. Both are "the thing holding text + attachments". */
+ *  being part of the message. Both are "the thing holding text + attachments".
+ *  Delivered rows go through the typed segments renderer (`.typed-input` >
+ *  … > `section.turn-mail`), which is the real content host there. */
 const contentOf = (bubble: Element): Element =>
-  bubble.querySelector(':scope > .pendbody') ?? bubble
+  bubble.querySelector(':scope > .pendbody') ?? bubble.querySelector('.turn-mail') ?? bubble
 
-/** THE PROPERTY THE USER ASKED FOR, asserted identically on either view. */
+/** THE PROPERTY THE USER ASKED FOR, asserted identically on either view.
+ *  `EventCard` always renders an `.event-fallback` wrapper for an untyped mail
+ *  row, even for an empty body, so "the text block is present" is judged by
+ *  whether it actually carries prose, not by the wrapper's existence. */
 function assertColumn(bubble: Element, want: { text: boolean; imgs: number; chips?: number },
   label: string): void {
   const host = contentOf(bubble)
-  const text = host.querySelector(':scope > .msgtext')
+  const text = host.querySelector(':scope > .event-fallback')
+  const hasText = !!text?.querySelector('.event-prose:not(:empty)')
   const row = host.querySelector(':scope > .attach-row')
   const chips = want.chips ?? 0
   const anyAtt = want.imgs + chips > 0
@@ -155,7 +164,7 @@ function assertColumn(bubble: Element, want: { text: boolean; imgs: number; chip
   // 1. the blocks exist exactly when they have something to say — an empty
   //    text block above a picture, or an empty row below text, is the
   //    "collapses oddly" case
-  assert.equal(Boolean(text), want.text, `${label}: text block present == ${want.text}`)
+  assert.equal(hasText, want.text, `${label}: text block present == ${want.text}`)
   assert.equal(Boolean(row), anyAtt, `${label}: attach row present == ${anyAtt}`)
 
   // 2. no attachment sits loose beside the text. THIS is what made it a row:
@@ -172,10 +181,10 @@ function assertColumn(bubble: Element, want: { text: boolean; imgs: number; chip
 
   // 3. …and when both blocks exist they are SIBLINGS, text first — which is
   //    what "column" means structurally once nothing is loose
-  if (text && row) {
-    assert.ok(text.parentElement === row.parentElement,
+  if (hasText && row) {
+    assert.ok(text!.parentElement === row.parentElement,
       `${label}: text and attachments share a parent`)
-    assert.ok(text.compareDocumentPosition(row) & 4 /* FOLLOWING */,
+    assert.ok(text!.compareDocumentPosition(row) & 4 /* FOLLOWING */,
       `${label}: the text comes first, the attachments below it`)
   }
   // 4. …and multiple attachments share ONE row rather than splitting
@@ -191,7 +200,9 @@ const pendBubble = (el: HTMLElement) => {
   return b!
 }
 const deliveredBubble = (el: HTMLElement) => {
-  const b = el.querySelector('.msg.user:not(.pending)')
+  // a typed mail segment renders through `.typed-input`, not `.msg.user` —
+  // the plain-text bubble only for a row with no decodable segments
+  const b = el.querySelector('.msg.user:not(.pending), .typed-input')
   assert.ok(b, 'fixture: the delivered bubble rendered')
   return b!
 }
@@ -284,9 +295,14 @@ domTest('§7 PARITY: the same message reads the same queued and delivered',
     const el = await mount(deskEl(node(ND), SL))
     await flush()
 
-    /** the ordered content blocks, by kind — the arrangement, nothing else */
+    /** the ordered content blocks, by kind — the arrangement, nothing else.
+     *  The delivered row's card header (`.turn-mail-head`) is envelope
+     *  chrome, not part of "the message" the user compared — the pending
+     *  bubble has no equivalent header at all (unknown mail, `eventSurface`
+     *  gives it no class), so parity is judged past it, not by it. */
     const shape = (bubble: Element) => [...contentOf(bubble).children]
-      .map((c) => c.classList.contains('msgtext') ? 'text'
+      .filter((c) => !c.classList.contains('turn-mail-head'))
+      .map((c) => c.classList.contains('event-fallback') ? 'text'
         : c.classList.contains('attach-row') ? `attach×${c.children.length}`
           : `?${c.className}`)
     const pend = shape(pendBubble(el))

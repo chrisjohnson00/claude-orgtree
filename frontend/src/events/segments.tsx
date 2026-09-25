@@ -68,16 +68,24 @@ export function SegmentList({ segments, profile, slug, nid, world, onOpen, actor
       }
       case 'notices': return <div key={i} className="event-notices">{segment.rows.map((row, j) => <div key={j}>
         {card(row, false, undefined, <time className="event-time">{fmtFull(row.at)}</time>)}</div>)}</div>
-      case 'mail': return <div key={i} className="event-mail">{segment.rows.map((row, j) => <section key={row.id ?? j}
-        {...eventSurface(row, profile)} className={'turn-mail ' + eventSurface(row, profile).className + (row.kind === 'notice' ? ' passive' : '')} data-mail-id={row.id}>
+      case 'mail': return <div key={i} className="event-mail">{segment.rows.map((row, j) => {
+        const decoded = decodeEventRow(row, profile)
+        // the envelope can hold several authors in one turn-start batch — the
+        // reader's own card gets a border, so it never reads as just another
+        // peer's passing mention
+        const own = decoded.kind === 'known' && isAuthoredUser(decoded.event)
+        return <section key={row.id ?? j}
+        {...eventSurface(row, profile)} className={'turn-mail ' + eventSurface(row, profile).className
+          + (row.kind === 'notice' ? ' passive' : '') + (own ? ' from-user' : '')} data-mail-id={row.id}>
         <header className="turn-mail-head event-head">{card(row, false, "header")}<time>{fmtFull(row.at)}</time>
-          {decodeEventRow(row, profile).kind !== 'known' && <><b>{row.from}</b><span>{row.kind}</span></>}
+          {decoded.kind !== 'known' && <><b>{row.from}</b><span>{row.kind}</span></>}
           {row.relationship && <span>{row.relationship}</span>}
           {row.kind === 'notice' && <span className="turn-mail-passive">no reply expected</span>}
         </header>
         {card(row, true, "body")}<SegmentAttachments values={row.attachments} slug={slug} nid={nid}/>
         {row.attachments_missing?.map((name,k)=><div key={k} className="dim">Attachment unavailable: {name}</div>)}
-      </section>)}</div>
+      </section>
+      })}</div>
     }
     const unhandled: never = segment
     return unhandled

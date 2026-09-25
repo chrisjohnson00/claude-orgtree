@@ -21,13 +21,12 @@ import urllib.request
 from typing import Any, cast
 
 if __package__:
-    from . import deployment, opreceipts
+    from . import opreceipts
 else:
     # Sandboxed Claude runs this dependency-free server by its mounted file
-    # path rather than with ``-m``. Preserve that supported entry point while
-    # sharing the one authoritative policy parser.
+    # path rather than with ``-m``.
     sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-    from orgtree import deployment, opreceipts
+    from orgtree import opreceipts
 
 ORG: str = os.environ.get("ORGTREE_ORG", "")
 NODE: str = os.environ.get("ORGTREE_NODE", "")
@@ -40,30 +39,17 @@ BRIDGE_SECRET: str = os.environ.get("ORGTREE_BRIDGE_SECRET", "")
 # ⚠ THE SHELL A WATCHDOG'S TARGET ACTUALLY GETS (2026-08-22).
 #
 # `supervisor._wd_popen` spawns command/stream dogs with `shell=True` and the
-# BACKEND SERVICE's environment. On Windows that is cmd.exe with the service
-# PATH — no Git usr\bin, so no grep/sed/awk/tr, no `$(...)`, no `$VAR`, no
-# /tmp, and `find` is Windows FIND.EXE. This card previously said a dog "runs
-# WITH YOUR HANDS (needs your bash)", agents reasonably read that as "write
-# bash", and their dogs then matched nothing forever while reporting
+# BACKEND SERVICE's environment: `sh`, without the agent's interactive rc files
+# or PATH additions. This card previously said a dog "runs WITH YOUR HANDS
+# (needs your bash)", agents reasonably read that as "write for my shell", and
+# their dogs then matched nothing forever while reporting
 # `state: armed, fired: 0` — which is also exactly what a healthy dog waiting
-# on a condition reports. Three dogs on this machine were dead that way for
-# up to nine days before anyone could tell.
-#
-# `os.name` here is the right proxy: this server runs beside the shell its
-# dogs get — on the host for a host org, inside the container for a sandboxed
-# one. Both idioms are spelled out anyway, so a wrong guess still leaves the
-# reader informed rather than confidently mistaken.
+# on a condition reports. Three dogs on one machine were dead that way for up
+# to nine days before anyone could tell.
 _WD_SHELL_WARNING: str = (
-    ("On Windows (THIS MACHINE) the target is handed to cmd.exe with the "
-     "backend service's PATH: grep, sed, awk, tr, $(...), $VAR and /tmp/... "
-     "DO NOT WORK, and `find` is FIND.EXE, not GNU find. Write cmd: findstr, "
-     "dir /b, %VAR%, %TEMP%. (On a POSIX host or inside a sandbox it is "
-     "`sh`, without your interactive rc files or PATH additions.) "
-     if os.name == "nt" else
-     "The target is handed to `sh` with the backend service's environment — "
-     "your interactive shell's aliases, rc files and PATH additions are NOT "
-     "there, so use absolute paths for anything unusual. (On a Windows host "
-     "it is cmd.exe instead, where grep/sed/awk/$(...)/$VAR/tmp all fail.) "))
+    "The target is handed to `sh` with the backend service's environment — "
+    "your interactive shell's aliases, rc files and PATH additions are NOT "
+    "there, so use absolute paths for anything unusual. ")
 
 # JSON-schema fragments/tool cards for the MCP wire — freeform JSON by nature
 TOOLS_SCHEMA: dict[str, Any] = {
@@ -441,7 +427,7 @@ TOOLS: list[dict[str, Any]] = [
             "their managers) or the work you interrupted just stops. Use it when "
             "the wait is worse than that — an urgent fix on a machine that never "
             "goes quiet. Otherwise use orgtree_prime_restart, which costs nobody "
-            "anything. ☞ USE THIS TOOL — never run update.ps1 / update.sh "
+            "anything. ☞ USE THIS TOOL — never run update.sh "
             "yourself from your own terminal. The update restarts the backend, "
             "which tears down the turn that launched it, so a script started from "
             "your shell dies mid-build and leaves the install half-updated "
@@ -739,11 +725,10 @@ TOOLS: list[dict[str, Any]] = [
             "have one) — but ⚠ NOT IN YOUR SHELL. The target is handed to `sh` "
             "with the backend service's environment — your interactive shell's "
             "aliases, rc files and PATH additions are NOT there, so use absolute "
-            "paths for anything unusual. (On a Windows host it is cmd.exe "
-            "instead, where grep/sed/awk/$(...)/$VAR/tmp all fail.) If you would "
-            "rather write the POSIX idiom, pass shell:\"bash\" and the target runs "
-            "in `bash -lc` instead — it REFUSES at create if no bash exists here "
-            "rather than quietly using cmd.exe. Every create SMOKE-RUNS your "
+            "paths for anything unusual. If you would rather write bash, pass "
+            "shell:\"bash\" and the target runs in `bash -lc` instead — it "
+            "REFUSES at create if no bash exists here rather than quietly "
+            "using sh. Every create SMOKE-RUNS your "
             "target once and returns its real output and exit code in `smoke`: "
             "READ IT — that is the five seconds that tells you whether this dog "
             "can ever fire. And `list` reports `checks_run`, `last_check`, "
@@ -1617,19 +1602,9 @@ TOOLS: list[dict[str, Any]] = [
     },
 ]
 
-_AGENT_RESTART_TOOLS = frozenset({
-    "orgtree_self_restart", "orgtree_prime_restart",
-})
-
-
 def available_tools() -> list[dict[str, Any]]:
-    """The tool catalogue permitted by the install-wide deployment policy."""
-
-    if deployment.current_policy().allow_agent_restart:
-        return TOOLS
-    return [
-        tool for tool in TOOLS
-        if str(tool.get("name") or "") not in _AGENT_RESTART_TOOLS]
+    """The tool catalogue served to the CLI."""
+    return TOOLS
 
 
 def _lost_kind(exc: Exception) -> str:

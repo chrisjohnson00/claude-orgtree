@@ -41,7 +41,7 @@ TREE = {
     "fable_limit_policy": "freeze", "fable_filter_policy": "halt",
     "cascade_hire": False, "cascade_alloc": True, "sandboxed": False,
     "audience_requests": [], "org_inbox": None, "net": None,
-    "disk": None, "public": False, "headless": False,
+    "public": False, "headless": False,
 }
 
 

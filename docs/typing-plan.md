@@ -21,8 +21,7 @@ scope; check items off as they land.
       previously lived only in people's heads (see the misleading-reads history).
       Single source of truth; extend it rather than re-deriving dict shapes.
 - [x] `pyrightconfig.json` (basic mode, py3.10). Run with `npx pyright` from the
-      repo root. Not wired into CI yet — the repo has none; update.ps1 is not a
-      gate. `backend/tests` is excluded on purpose: the suite deliberately
+      repo root. Not wired into CI yet; update.sh is not a gate. `backend/tests` is excluded on purpose: the suite deliberately
       passes wrong shapes to assert `LedgerError`, and its correctness gate is
       running it (`python backend/tests/test_ledger.py`), not checking it.
 - [x] Annotate signatures across `ledger.py`, `store.py`, `supervisor.py`,
@@ -42,7 +41,7 @@ scope; check items off as they land.
       tree payload, chat, inbox, org list. The API seam is where silent shape
       drift between backend and frontend actually bites.
 - [x] `src/api.js` → `src/api.ts` with typed request/response signatures.
-- [x] Convert leaf files: `forms`, `icons`, `picker`, `main`, `DiskBrowser`.
+- [x] Convert leaf files: `forms`, `icons`, `picker`, `main`.
 - [x] Convert `App.jsx` (runtime equivalence proven by esbuild-stripped diff).
 - [x] Convert `Canvas.jsx` LAST (converted in place, NOT split — the user's
       strict-conversion directive superseded the split-as-it-converts idea;

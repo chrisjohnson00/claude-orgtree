@@ -37,7 +37,7 @@ FIXDIR = os.path.join(ROOT, "frontend", "tests", "fixtures", "events")
 
 
 def outputs() -> dict[str, str]:
-    """path → content, exactly as the files should read (CRLF; the repo's .gitattributes)."""
+    """path → content, exactly as the files should read (LF; matches what's checked in)."""
     out: dict[str, str] = {
         TS: events.emit_typescript(),
         SCHEMA: json.dumps(events.emit_json_schema(), indent=2, ensure_ascii=False) + "\n",
@@ -49,7 +49,7 @@ def outputs() -> dict[str, str]:
                "body": events.render_agent(ev)}
         out[os.path.join(FIXDIR, v + ".json")] = json.dumps(doc, indent=2,
                                                             ensure_ascii=False) + "\n"
-    return {p: c.replace("\r\n", "\n").replace("\n", "\r\n") for p, c in out.items()}
+    return out
 
 
 def main(argv: list[str]) -> int:

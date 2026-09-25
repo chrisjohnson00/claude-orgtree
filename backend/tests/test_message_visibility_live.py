@@ -237,15 +237,12 @@ def start_backend(max_turns: int = 16, steer_hook: str = "0",
                 env[k] = os.environ[k]
         # ⚠ and name the binary explicitly. The supervisor's own resolution
         # prefers the PINNED install under the DATA root — which this rig has
-        # redirected to a temp dir — so it falls through to `which claude`,
-        # finds the npm `claude.CMD` shim, and on Windows that is launched as
-        # `cmd /c`, which TRUNCATES argv at the first embedded newline. The
-        # identity prompt is multiline, so every turn died in ~1.6 s with no
-        # transcript and no error (the supervisor's own warning, CLAUDE.md §4).
+        # redirected to a temp dir — so it would otherwise fall through to
+        # `which claude` and run whatever CLI that finds.
         pin = os.path.join(
             os.path.expanduser(os.environ.get("ORGTREE_REAL_DATA", "~/orgtree")),
             "cli", "node_modules", "@anthropic-ai", "claude-code", "bin",
-            "claude.exe" if os.name == "nt" else "claude")
+            "claude")
         if os.path.exists(pin):
             env["ORGTREE_CLAUDE"] = pin
     else:

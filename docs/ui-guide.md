@@ -165,7 +165,7 @@ snowflake, lock, layers, fullscreen, hearing.
 Any org can be exposed to others through a **preauthenticated secret URL**
 (see the README). Kiosk orgs are a **distinct type, born as kiosks**: tick
 **kiosk** in the *new organization* form to reveal the three limits
-(credits / spend / storage-or-disk) and the **permission ceiling** (its own
+(credits / spend / storage) and the **permission ceiling** (its own
 section below) — the org is minted with its secret URL in one step, and
 existing orgs are never converted. The **sandboxed** checkbox in the same
 form applies to ANY org (kiosks default it on): agents run in a Docker
@@ -176,8 +176,8 @@ ever enters the sandbox (nothing to configure).
 All per-kiosk management lives in **that org's own ⚙ settings panel** (admin
 side; there is no all-kiosks dashboard): the three cap inputs (the credit
 cap refuses to go below what the org already holds — retire or dissolve
-agents first; a sandboxed kiosk's storage cap is its disk size, 4096 MB
-floor), the share URL with copy and **rotate** buttons (rotation revokes the
+agents first; the storage cap is enforced only for unsandboxed kiosks),
+the share URL with copy and **rotate** buttons (rotation revokes the
 old link instantly), and a pause/reactivate button for the URL — pausing
 kills the link but the org stays a kiosk and its limits keep binding. Like
 everything in that panel, cap edits apply on the single bottom **save** —
@@ -204,9 +204,7 @@ and a red chip says so — raising the limit in the org's settings clears the
 freeze, after which ▶ resume replays the interrupted turns. The storage chip
 tracks the org workspace against its cap; over the limit, agents keep
 running but workspace writes are blocked (deleting files still works) until
-usage drops back under — the block lifts on its own. A disk-migrated
-sandboxed kiosk shows the **org-disk chip** instead, which opens the storage
-browser (see "The storage browser") — visitors get the full tool.
+usage drops back under — the block lifts on its own.
 
 ## The kiosk permission ceiling
 
@@ -228,43 +226,6 @@ over-ceiling grant made by YOU raises the ceiling to fit (logged, named)
 instead of clamping — visitors always clamp; with it off, your own
 over-ceiling save offers a one-click "raise ceiling & apply" bridge.
 Ceiling edits are saved by the settings panel's single bottom **save**.
-
-## The storage browser (the org disk)
-
-A disk-migrated sandboxed org replaces the storage chip with the **org-disk
-chip** in the top bar: used / total MB, a "→ N MB pending" suffix while a
-shrink is staged, and "— FULL" / "— turns paused" states. Clicking it opens
-the browser (the hard-full alert's button opens it too). Two modes, fed by
-the same cached walk:
-
-- **largest files** — a flat triage list, size descending, paginated with
-  "load more". The hard-full alert always opens this mode (the fastest path
-  to freeing space); the chip opens the last-used one.
-- **browse** — a conventional explorer with breadcrumbs; entries are
-  INTERMIXED by size descending (a 900 MB folder outranks a 200 MB file —
-  the view exists for size triage), folders showing recursive size and file
-  count.
-
-Checkbox-select entries; the delete button arms on the first click and shows
-the count and bytes ("really delete N file(s) · X MB?"). What may be deleted
-is **server-enforced**, each row wearing its class and reason: the **system
-seed** (/usr, /var…) is shown — "4 GB cap, 1.2 GB of it /usr" answers "where
-did my space go" — but blocked (deleting it bricks the container);
-transcripts of live sessions, knowledge bearers, and archived (rehirable)
-nodes are blocked; **lost-generation** transcripts and sessions no node owns
-are marked `reclaimable`. Every file carries a ⤓ download link.
-
-The **resize** control (admin only): grow applies instantly, online; a
-shrink stages until the org's container is next down (an amber "A → B MB
-pending" chip appears, with **apply now** — briefly stops the org's
-agents — and a cancel), is refused below current usage, and floors at
-4096 MB. The browser depends on nothing but the backend (reads and deletes
-go over `\\wsl.localhost`), so it works with the container stopped and the
-disk 100% full — the state it exists for. Kiosk visitors get the same tool
-minus resize; engine credential files are excluded for them. Hard-full is
-announced by a screen-wide PERSISTENT alert — state, not a toast: it
-survives reloads, carries the "open the recovery browser" button, and
-dismisses itself when usage drops.
 
 ## The eye switchboard
 
@@ -426,10 +387,10 @@ one glides the camera there — the same move as clicking its card. Dimmed
 chips are non-live reports.
 
 - Header (ONE row): tier, name (hover for its purpose), context wheel
-  (red ≥ 80% — compaction approaches; **in the zoomed view the wheel is a
-  button: click it to compact NOW**, after a confirm — same split as the
-  automatic one; zoomed-out wheels are passive indicators), status chip,
-  working indicator (✳),
+  (red at or above the compaction threshold — compaction approaches;
+  **in the zoomed view the wheel is a button: click it to compact NOW**,
+  after a confirm — same split as the automatic one; zoomed-out wheels are
+  passive indicators), status chip, working indicator (✳),
   badges, cost, the retire/dissolve/rehire action, and the tabs. While the
   agent is responding, the composer's send button becomes a red ■ STOP
   (Claude Code idiom) that interrupts the current response — Enter still
@@ -658,8 +619,8 @@ toast repeats that warning. Refused while the agent is mid-turn.
 The panel keeps the everyday knobs inline; **advanced…** opens the shared
 advanced modal (the same shape the create form's "advanced…" opens), holding
 the fable limit/filter policies, the cost-bubbling toggles, the kiosk
-permission ceiling, the fable-lock decree and the legacy sweep. Facts fixed
-at creation — kiosk, sandboxed, fixed-disk — show there as locked
+permission ceiling and the fable-lock decree. Facts fixed at creation —
+kiosk, sandboxed — show there as locked
 "born-with" chips: visible, never editable. Nothing in the modal saves
 itself; the panel's single **save** commits everything.
 
@@ -672,10 +633,9 @@ itself; the panel's single **save** commits everything.
 - **default top-level grant** (50 unless changed): pre-fills the draft bar of
   every new top-level hire — on top of its seat cost; drag to adjust before
   confirming.
-- **compaction threshold** (80% default, configurable 50–95): when an
-  agent's context passes this fraction of its window it compaction-splits
-  (successor continues, predecessor archives as a knowledge bearer). The
-  95% ceiling is hard — it is not configurable.
+- **compaction threshold** (50% default, configurable 20–95): when an agent's context passes this fraction of its
+  window it compaction-splits (successor continues, predecessor archives as a knowledge bearer). The 95% ceiling is
+  hard — it is not configurable.
 - **fable weekly-limit policy** and the **fable content-filter policy**
   (a filter-flagged message either halts the turn — default — or converts
   the agent to opus and retries it) — what happens when the shared Fable quota

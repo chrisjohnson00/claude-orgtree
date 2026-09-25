@@ -120,13 +120,8 @@ def record_turn_popens(fn):
     return calls
 
 
-def assert_turn_popens_hidden(calls, path):
+def assert_one_cold_popen(calls, path):
     assert len(calls) == 1, f"{path}: expected one cold Popen, got {calls}"
-    expected = (S.subprocess.CREATE_NO_WINDOW
-                if os.name == "nt" else 0)
-    assert calls[0].get("creationflags") == expected, (
-        f"{path}: effective creationflags were "
-        f"{calls[0].get('creationflags')!r}, expected {expected!r}")
 
 
 # ── A. WarmProc delivery gate ──────────────────────────────────────────────
@@ -395,7 +390,7 @@ def d_killed_parked_process_degrades_to_cold():
     assert st["last_error"] is None, f"fallback turn failed: {st['last_error']}"
     W.keeper_pass_now()                  # and the seat re-warms after
     wait_for(lambda: W.is_warm(SLUG, NID), why="re-warm after crash")
-    assert_turn_popens_hidden(popens, "ordinary cold turn spawn")
+    assert_one_cold_popen(popens, "ordinary cold turn spawn")
 
 
 def d_idle_identity_change_respawns_immediately():
@@ -797,7 +792,7 @@ def f_death_between_claim_and_write_falls_back_cold():
         popens = record_turn_popens(lambda: S._run_turn(SLUG, NID, marker))
     finally:
         W.claim = real_claim
-    assert_turn_popens_hidden(popens, "claim-death cold retry")
+    assert_one_cold_popen(popens, "claim-death cold retry")
     st = S.state(SLUG, NID)
     assert st["last_error"] is None, (
         f"a dead warm process must be indistinguishable from never having "

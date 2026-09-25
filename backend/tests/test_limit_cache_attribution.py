@@ -157,7 +157,9 @@ check("cross-provider resume state is cleared while Claude state survives",
 
 
 def wiring_contract() -> None:
-    run_src = inspect.getsource(S._run_one_turn)
+    # _run_one_turn is now a thin wrapper; the pinned body lives in
+    # _run_one_turn_recorded.
+    run_src = inspect.getsource(S._run_one_turn_recorded)
     resume_src = inspect.getsource(S.resume_frozen)
     assert "_limit_cache_result_state(st, _usage, limited)" in run_src
     assert "journal_limit_cache_usage(" in run_src

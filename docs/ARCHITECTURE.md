@@ -259,24 +259,20 @@ ledger, supervisor, the gateways, or the canvas.
   has.** The update stops and restarts the backend, which tears down the very
   turn that asked for it, so any update script spawned as a child of an
   agent's own shell dies mid-flight with its session. Measured on a peer
-  install 2026-08-09 (neoja): an agent ran `update.ps1` from a backgrounded
+  install 2026-08-09 (neoja): an agent ran the update script from a backgrounded
   shell job, the log stopped at `== building the UI ==`, the backend never
   restarted, and the repo was left advanced with the old code still running.
   An OPERATOR's console outlives the restart; an agent has no console that
   does. ⚠ This is why the mute-log bug below mattered far more than it looked:
   the detached spawn is not one of two routes for an agent, it is the ONLY
   one, and it was the route that reported nothing.
-- **`_detached_spawn` must not use `DETACHED_PROCESS` on Windows.** That flag
-  detaches the child from the console and carries the redirected stdout handle
-  away with it: measured 0/4 lines reaching the log vs 4/4 under
-  `CREATE_NO_WINDOW`, across `Write-Host`, `Write-Output`, `[Console]::Out`
-  and a native child. Every Windows self-update logged nothing but the banner
-  the Python side writes, from the feature's introduction until 2026-08-09.
-  It hid this long because NO local deploy exercises the path — an operator
-  runs `update.ps1` through a shell that has a console. Survival does not
-  depend on the flag (a Windows child already outlives its parent;
-  `DETACHED_PROCESS` governs the console, not the lifetime — verified by
-  killing the parent mid-spawn).
+- **`_detached_spawn` starts the child in a new session and keeps its output.**
+  `start_new_session=True` takes the child out of the backend's process group,
+  so a signal sent to that group does not reach the update script. The
+  child's stdout and stderr are redirected to the self-restart log, and the
+  spawn itself (argv and pid) is written to that log first, so "never
+  started", "started and died silently" and "output never reached the file"
+  leave three different logs.
 
 - **Hook isolation is enumerated, not categorical.** Agents get a
   `--settings` with an explicit entry for every known hook event — empty
@@ -437,24 +433,18 @@ ledger, supervisor, the gateways, or the canvas.
   every other dir grant is stored by the ledger, shown granted in the UI,
   and silently dropped by `_build_cmd` (host paths do not exist in the
   container). A control that does nothing is displayed as if it worked.
-- **The org disk mounts EXACTLY ONCE** (by the docker-desktop distro); a
-  second mount of the same image is silent filesystem corruption. Verify the
-  sentinel before every container start — Docker CREATES AN EMPTY DIR for a
-  missing bind source, and an agent then rebuilds files into a divergent
-  phantom workspace.
-- **Two storage-enforcement models coexist** in supervisor.py: disk orgs
-  (tiered: 80 warn / 90 turn-pause / 85 clear / 99 full; ENOSPC is the hard
-  cap; NO container stop) and legacy volume-layout orgs (icacls deny +
-  stop-and-freeze). Patch the right one; the module comment era matters.
-- **Sandboxed transcripts live ON the org disk**, not under
-  `<data>/sandboxes/` — for any migrated org the agent home (transcripts
-  included) is on the ext4 image via `\\wsl.localhost`;
-  `<data>/sandboxes/<slug>/` is only the frozen pre-migration rollback
-  copy, and reading it yields *silently stale* transcripts — worse than
-  missing.
-- **`disk.py` has no platform guard** — off Windows a sandboxed org dies
-  with an unhandled `FileNotFoundError: 'wsl'` (and kiosks sandbox by
-  default). Host mode is genuinely cross-platform.
+- **Sandboxed orgs have no storage cap.** System dirs are per-org named
+  volumes; the agent home (`<data>/sandboxes/<slug>/home`, transcripts
+  included), the workspace, and scratch are host bind mounts. Docker
+  CREATES AN EMPTY DIR for a missing bind source, which is why
+  `ensure_container` refuses an org with no workspace recorded.
+- **Storage enforcement is for unsandboxed kiosks only**: `storage_check`
+  walks workspace + scratch, warns near the limit, and sets
+  `storage_blocked` over it. It returns early for sandboxed orgs.
+- **Bind-mount ownership is uid-sensitive.** The image's `agent` is uid
+  1001; host dirs are created by the backend's uid. `_heal_ownership` and
+  `chown_agent` hand paths to `agent`, which the backend then cannot write
+  from the host unless the uids match.
 - **The repo path is not the data path**: the repo is the git checkout;
   `~/orgtree/` is live DATA (org docs, `.port`, the pinned CLI) and must
   not be "corrected" to match. Commit SHAs predating the clean import
@@ -467,11 +457,8 @@ ledger, supervisor, the gateways, or the canvas.
   `os.replace` over a momentarily-open file.
 - **A bare `python -m orgtree.api` silently DROPS the public listener** —
   the 0.0.0.0 gateway starts only when `ORGTREE_PUBLIC_PORT` is set, which
-  `update.ps1` does (7361) and a manual restart forgets. Manual restart =
-  set the env + redirect logs + verify BOTH ports listen. Related deploy
-  artifact: `update.ps1` never "hangs" — the spawned backend inherits the
-  console pipe, so a piped invocation waits forever after the script is
-  done; run it unpiped or redirect to a file.
+  `update.sh` does (7361) and a manual restart forgets. Manual restart =
+  set the env + redirect logs + verify BOTH ports listen.
 
 ## Public surface
 
@@ -514,8 +501,8 @@ ledger, supervisor, the gateways, or the canvas.
 - **Desk and draft interiors use the inverted-scale regime** — authored at a
   virtual size and counter-scaled into the 124 px card, so authored px ≈
   screen px only at the intended zoom.
-- **The API `Settings` body takes `compact_at` as a PERCENT (50–95) but the
-  org doc stores a FRACTION** (0.50–0.95); `defaults.json` holds
+- **The API `Settings` body takes `compact_at` as a PERCENT (20–95) but the
+  org doc stores a FRACTION** (0.20–0.95); `defaults.json` holds
   org-doc-shaped values, not request-shaped ones.
 - **`CreditBar`'s `max ?? Infinity`** means `max=undefined` is legal and
   means unbounded; `maxGhost` renders only when finite.
@@ -575,11 +562,11 @@ stands; the number does not.)
 ## Current practice: a long job that outlives a turn
 
 Harness background tasks and processes started from the turn's shell do not
-survive that turn. On Windows, create a necessary long-running test process
-through WMI `Win32_Process.Create`, which gives the WMI service ownership
-outside the turn job object. Watch it with `orgtree_watchdog`, and consider a
-test run successful only when both `RUN COMPLETE` appears in its output and
-the runner's `COMPLETE` marker exists in its log directory.
+survive that turn. Start a necessary long-running test process detached in its
+own session (for example with `setsid`), so it is not part of the turn's
+process tree. Watch it with `orgtree_watchdog`, and consider a test run
+successful only when both `RUN COMPLETE` appears in its output and the
+runner's `COMPLETE` marker exists in its log directory.
 
 ## Running a long job without losing it (historical snapshot)
 
@@ -605,16 +592,13 @@ enough to have fired.
   A reaped harness task is not a dead runner. One agent read it that way,
   relaunched a duplicate, and only avoided a port collision by noticing the
   original was still running.
-- **A DETACHED process survives the turn — but not a backend restart.**
-  `Start-Process` (Windows) or `start_new_session` outlives the turn fine; a
-  detached tier run was measured completing all 40 suites across several turn
-  boundaries. But `_leash()` puts every CLI child in a Windows job object with
-  `KILL_ON_JOB_CLOSE` tied to the backend, and job membership is INHERITED by
-  every descendant — so `orgtree_self_restart` / `update.ps1` reaps detached
-  runners too. Confirmed with `IsProcessInJob`: processes started outside
-  orgtree read *not-in-job*; a deliberately-detached grandchild reads
-  *in-job*. **Sequence a deploy against runs in flight; the tool's own "no
-  agent is mid-turn" refusal does not know a detached test run exists.**
+- **A DETACHED process survives the turn.** A process started with
+  `start_new_session` outlives the turn fine; a detached tier run was measured
+  completing all 40 suites across several turn boundaries. The backend's
+  `atexit` sweep kills only the CLI processes it spawned itself, not their
+  detached descendants. **Sequence a deploy against runs in flight anyway; the
+  tool's own "no agent is mid-turn" refusal does not know a detached test run
+  exists, and a run that talks to the backend fails while it restarts.**
 - **So: launch detached, record your own exit status, and wait with a
   watchdog.**
 

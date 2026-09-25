@@ -138,6 +138,11 @@ def _real_codex_call() -> None:
     if not exe or not os.path.exists(exe):
         raise SkipCheck(
             "real Codex is not installed; config assertion still ran")
+    stubs = os.environ.get("ORGTREE_TEST_STUB_BIN")
+    if stubs and os.path.dirname(os.path.realpath(exe)) == os.path.realpath(stubs):
+        raise SkipCheck(
+            "codex is tools/run_tests.py's stub; run this suite directly for "
+            "the real app-server leg")
 
     temp = tempfile.mkdtemp(prefix="orgtree-codex-mcp-approval-")
     log_path = os.path.join(temp, "fake-mcp.log")

@@ -37,7 +37,7 @@ says in its body what should happen the day the gap is closed.
     §6  error scrubbing for public visitors
     §7  the sandbox bridge
     §8  /api/agent — the MCP gateway
-    §9  uploads, scratch and path traversal (+ §9b the org-disk browser)
+    §9  uploads, scratch and path traversal
     §10 failure modes — nothing 500s
     §11 raw HTTP against a real uvicorn on :7402
 """
@@ -76,14 +76,12 @@ os.environ["ORGTREE_PUBLIC_PORT"] = "7402"
 os.environ.pop("ORGTREE_EXPOSE_ADMIN", None)
 
 from orgtree import api, sandbox, store, supervisor            # noqa: E402
-from orgtree import disk as dsk                                # noqa: E402
 
 # no chatq registry writes, no Docker, no host storage walks
 supervisor.chatq_register_org = lambda slug: None
 supervisor.chatq_deregister_org = lambda slug: None
 supervisor.storage_check = lambda slug: None
 sandbox.warm = lambda org: None
-sandbox.vm_disk_cap_mib = lambda: None
 
 PASS = 0
 
@@ -739,10 +737,6 @@ FROZEN = [
     # the rename repair reads its ACTOR off the wire, so the matrix is what
     # stops a visitor claiming to be the user and rewriting ownership
     ("POST", f"/api/orgs/{K}/repair-rename", "the rename repair"),
-    ("POST", f"/api/orgs/{K}/disk/resize", "disk resize"),
-    ("POST", f"/api/orgs/{K}/disk/resize/apply", "disk resize apply"),
-    ("GET", f"/api/orgs/{K}/sweep-legacy", "the legacy-sweep preview"),
-    ("POST", f"/api/orgs/{K}/sweep-legacy", "the legacy sweep"),
     # it rewrites the whole docket and writes a JSON export of the document
     # to disk — an operator control that was reachable from a share token
     ("POST", f"/api/orgs/{K}/migrate-work-identity", "the identity migration"),
@@ -921,9 +915,7 @@ CROSS_GET = [f"/api/orgs/{K2}", f"/api/orgs/{K2}/events",
              f"/api/orgs/{SBX}/nodes/{SNID}/chat",
              f"/api/orgs/{SBX}/nodes/{SNID}/scratch",
              f"/api/orgs/{SBX}/nodes/{SNID}/file",
-             f"/api/orgs/{SBX}/nodes/{SNID}/history",
-             f"/api/orgs/{K2}/disk", f"/api/orgs/{K2}/disk/file",
-             f"/api/orgs/{K2}/disk/dir"]
+             f"/api/orgs/{SBX}/nodes/{SNID}/history"]
 
 
 def _cross(m, p, b=None):
@@ -1294,7 +1286,7 @@ BRIDGE_CLOSED = [
     ("GET", f"/api/orgs/{SBX}/nodes/{SNID}/scratch"),
     ("POST", f"/api/orgs/{SBX}/nodes/{SNID}/message"),
     ("POST", f"/api/orgs/{SBX}/nodes/{SNID}/upload"),
-    ("GET", f"/api/orgs/{SBX}/disk/file"), ("GET", "/"), ("GET", "/index.html"),
+    ("GET", "/"), ("GET", "/index.html"),
     ("GET", "/assets/index.js"), ("POST", "/api/orgs"),
 ]
 
@@ -2122,137 +2114,6 @@ def _():
     assert r.body == b"xy", r.body[:40]
 
 
-# ------------------------------------------ §9b the org disk (recovery browser)
-print("\n§9b the org-disk recovery browser")
-
-FAKEDISK = tempfile.mkdtemp(prefix="orgtree-fakedisk-")
-os.makedirs(os.path.join(FAKEDISK, "home", "orgtree"), exist_ok=True)
-os.makedirs(os.path.join(FAKEDISK, "usr", "lib"), exist_ok=True)
-DISK_SECRET = "cafebabe" * 4
-with open(os.path.join(FAKEDISK, "home", "orgtree", ".bridge"), "w") as _f:
-    json.dump({"url": "http://host.docker.internal:7362",
-               "secret": DISK_SECRET}, _f)
-with open(os.path.join(FAKEDISK, "home", ".credentials.json"), "w") as _f:
-    _f.write('{"oauth":"HOST-OAUTH-TOKEN"}')
-with open(os.path.join(FAKEDISK, "home", "notes.txt"), "w") as _f:
-    _f.write("ordinary agent output")
-with open(os.path.join(FAKEDISK, "usr", "lib", "libc.so"), "w") as _f:
-    _f.write("seed")
-
-dsk.windows_path = lambda slug: FAKEDISK
-dsk.usage = lambda slug, max_age=15.0: (1024, 4096)
-dsk.enumerate_by_size = lambda slug, limit=500, offset=0: [
-    {"path": "home/orgtree/.bridge", "size": 90},
-    {"path": "home/.credentials.json", "size": 22},
-    {"path": "home/notes.txt", "size": 21},
-    {"path": "usr/lib/libc.so", "size": 999}][offset:offset + limit]
-dsk.list_dir = lambda slug, rel="", **kw: (
-    [{"path": "home", "dir": True, "size": 133}] if not rel else [])
-dsk.subtree_files = lambda slug, rel, **kw: []
-dsk.invalidate = lambda slug: None
-with store.DOC_LOCK:
-    _o = store.load_org(K)
-    _o.d["disk"] = {"size_mb": 4096}
-    store.save_org(_o)
-
-
-@t("☞ REGRESSION: the .bridge secret file is NOT served to a visitor")
-def _():
-    """`{home}/orgtree/.bridge` is written by sandbox.py and holds the org's
-    bridge secret. The bridge listener binds 0.0.0.0, so downloading this gave
-    a kiosk visitor the /api/agent gateway the public matrix freezes, the node
-    steer fetch, and the /anthropic proxy — which attaches the HOST's
-    subscription token."""
-    r = pub("GET", f"/api/orgs/{K}/disk/file",
-            query=b"path=home/orgtree/.bridge")
-    assert r.status == 403, r
-    assert DISK_SECRET not in r.text, "the secret came back anyway"
-
-
-@t("the engine credential file is not served to a visitor")
-def _():
-    r = pub("GET", f"/api/orgs/{K}/disk/file",
-            query=b"path=home/.credentials.json")
-    assert r.status == 403 and "HOST-OAUTH" not in r.text, r
-
-
-@t("an ordinary file on the disk still downloads for a visitor")
-def _():
-    r = pub("GET", f"/api/orgs/{K}/disk/file", query=b"path=home/notes.txt")
-    ok200(r, "notes.txt")
-    assert b"ordinary" in r.body, r.body[:60]
-
-
-@t("the listing classifies both secret files as blocked for a visitor")
-def _():
-    r = pub("GET", f"/api/orgs/{K}/disk")
-    ok200(r, "disk list")
-    by = {f["path"]: f for f in r.json["files"]}
-    assert by["home/orgtree/.bridge"]["class"] == "blocked", by
-    assert by["home/.credentials.json"]["class"] == "blocked", by
-    assert by["usr/lib/libc.so"]["class"] == "blocked", by      # system seed
-    assert by["home/notes.txt"]["class"] == "content", by
-    assert DISK_SECRET not in r.text
-
-
-@t("the visitor's disk payload hides the admin-only host numbers")
-def _():
-    r = pub("GET", f"/api/orgs/{K}/disk")
-    for key in ("vm_cap_mib", "size_mb", "pending_mb"):
-        assert key not in r.json, f"{key} leaked to a visitor"
-
-
-@t("…which the admin listener does get")
-def _():
-    assert "vm_cap_mib" in call(ADMIN, "GET", f"/api/orgs/{K}/disk").json
-
-
-@t("a visitor cannot delete the secret or seed files")
-def _():
-    r = pub("POST", f"/api/orgs/{K}/disk/delete",
-            {"paths": ["home/orgtree/.bridge", "home/.credentials.json",
-                       "usr/lib/libc.so"]})
-    ok200(r, "disk delete")
-    assert all(x["ok"] is False for x in r.json["results"]), r
-    assert os.path.isfile(os.path.join(FAKEDISK, "home", "orgtree", ".bridge"))
-    assert os.path.isfile(os.path.join(FAKEDISK, "usr", "lib", "libc.so"))
-
-
-def _disk_path(bad):
-    def go():
-        r = pub("GET", f"/api/orgs/{K}/disk/file",
-                query=("path=" + bad).encode())
-        no500(r, f"disk path={bad!r}")
-        assert r.status in (403, 404, 422), (bad, r)
-        assert "HOST-OAUTH" not in r.text and DISK_SECRET not in r.text, r
-    return go
-
-
-for _bad in ["../../../x", "..\\..\\x", "/etc/passwd", "C:\\Windows\\win.ini",
-             "", ".", "..", "home/../../escape", "home/./../../escape",
-             "C:home/notes.txt", "home/orgtree/../orgtree/.bridge"]:
-    check(f"disk path {_bad!r} is refused", _disk_path(_bad))
-
-
-@t("disk pagination clamps absurd values")
-def _():
-    r = pub("GET", f"/api/orgs/{K}/disk",
-            query=b"offset=-999999&limit=999999999")
-    ok200(r, "disk pagination")
-    assert r.json["limit"] == 500 and r.json["offset"] == 0, r.json
-
-
-@t("disk resize stays admin-only even with a valid kiosk token")
-def _():
-    r = pub("POST", f"/api/orgs/{K}/disk/resize", {"size_mb": 999999})
-    assert r.status == 403 and "admin side only" in r.text, r
-
-
-with store.DOC_LOCK:
-    _o = store.load_org(K)
-    _o.d.pop("disk", None)
-    store.save_org(_o)
-
 # ------------------------------------------------------- §10 no endpoint 500s
 print("\n§10 failure modes — nothing 500s")
 
@@ -2350,9 +2211,7 @@ POST_TARGETS = [
     f"/api/orgs/{K}/credit-requests", f"/api/orgs/{K}/inbox/read",
     f"/api/orgs/{K}/inbox/clear", f"/api/orgs/{K}/org_inbox/read",
     f"/api/orgs/{K}/audiences", "/api/extern/peer1/send", "/api/agent",
-    f"/api/orgs/{K}/nodes/{NID}/upload", f"/api/orgs/{K}/disk/delete",
-    f"/api/orgs/{K}/disk/resize", f"/api/orgs/{K}/disk/resize/apply",
-    f"/api/orgs/{K}/sweep-legacy", f"/api/orgs/{K}/ops",
+    f"/api/orgs/{K}/nodes/{NID}/upload", f"/api/orgs/{K}/ops",
 ]
 RAW_BODIES = [b"", b"{", b"null", b"[]", b'{"a":', b"\xff\xfe\x00",
               b'{"text": "\\ud800"}', b"0" * 100000]
@@ -2401,10 +2260,6 @@ QUERY_TARGETS = [
      [b"path=", b"path=..", b"path=%00", b"path=uploads"]),
     ("/api/orgs/{K}/nodes/{NID}/toolimg/abc",
      [b"", b"idx=-1", b"idx=99999", b"idx=abc"]),
-    ("/api/orgs/{K}/disk", [b"offset=-1&limit=0", b"offset=abc",
-                            b"limit=-5", b"offset=" + b"9" * 40]),
-    ("/api/orgs/{K}/disk/dir", [b"", b"path=..", b"path=%00", b"path=home"]),
-    ("/api/orgs/{K}/disk/file", [b"", b"path=", b"path=%00"]),
     ("/api/extern/peer1/messages", [b"", b"org=nope", b"after=", b"after=zzz"]),
     ("/api/orgs/{K}/inbox", [b""]),
     ("/api/orgs/{K}/audiences", [b""]),
@@ -2416,7 +2271,6 @@ QUERY_TARGETS = [
     ("/api/defaults", [b""]),
     ("/api/orgs", [b""]),
     ("/api/orgs/{K}", [b""]),
-    ("/api/orgs/{K}/sweep-legacy", [b""]),
 ]
 
 
@@ -2512,15 +2366,6 @@ def _():
     r = call(ADMIN, "POST", "/api/extern/peer1/send",
              {"org": ADMIN_SLUG, "body": "x", "attachments": [store.DATA_ROOT]})
     assert r.status == 422 and "not found" in r.text, r
-
-
-@t("kiosk config: a sandboxed org refuses a sub-4096 MB disk")
-def _():
-    for i in (0, 1, 4095):
-        r = call(ADMIN, "POST", "/api/orgs",
-                 {"name": f"tiny-{i}",
-                  "kiosk": {"sandbox": True, "storage_limit_mb": i}})
-        assert r.status == 422, (i, r)
 
 
 @t("kiosk config: a non-kiosk org refuses /kiosk with an explanation")

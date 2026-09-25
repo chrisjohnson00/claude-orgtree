@@ -404,9 +404,7 @@ when one happens. Items 1 and 2 below are rewritten accordingly; 3–7 stand unc
 6. **Attachments cross a machine boundary now.** Today's external attachments are *local paths on
    a machine you already trust* (`supervisor.py:2420-2446`). Remote ones must be uploaded to the
    hub and fetched by the receiver, with the existing caps applied (25 MB/file, 10 files —
-   `api.py:2109`, `ledger.py:885`) and a hub-side total. For sandboxed orgs they land inside the
-   virtual disk and count against its cap, so the disk soft-limit path must treat a large inbound
-   attachment as a normal fill event, not a surprise.
+   `api.py:2109`, `ledger.py:885`) and a hub-side total.
 7. **The hub sees everything in plaintext.** Say so in its README. It is a self-hosted trust
    decision, and the honest framing is "run it yourself, on a box you control". End-to-end
    signing (each org publishes a public key at registration; the hub relays signatures it cannot
@@ -513,23 +511,16 @@ mailserver, because it applies to any unattended orgtree.
 
 ### 9.3 Boot-start is not crash-restart
 
-A boot trigger covers the reboot; it does nothing for the backend dying at 04:00. Both are needed:
+A boot trigger covers the reboot; it does nothing for the backend dying at 04:00. Both are needed.
+One systemd **user** unit (`systemctl --user enable --now orgtree`, plus `loginctl enable-linger
+<user>` so it runs without a login session) with `Restart=always` and `RestartSec=10` covers both.
 
-- **Windows:** Task Scheduler's *restart on failure* handles the crash; the *At log on* trigger
-  handles the boot.
-- **Linux:** one systemd **user** unit (`systemctl --user enable --now orgtree`, plus
-  `loginctl enable-linger <user>` so it runs without a login session) with `Restart=always` and
-  `RestartSec=10` covers both. This is markedly cleaner than the Windows path, and worth saying
-  out loud: **a Linux box is the better host for an unattended instance**, and if the mailserver
-  makes autonomous orgs a real workflow, that is where they should live.
-- **macOS:** a launchd *user agent* with `KeepAlive` — same shape as the systemd unit.
-
-⚠ Whatever launches it must not fight a manually-run instance. Both deploy scripts already have the
+⚠ Whatever launches it must not fight a manually-run instance. `update.sh` already has the
 stale-backend guard and a `listeners()` port check (D-42, D-47) — the autostart entry should reuse
-the same script rather than invoke Python directly, so that logic is not duplicated into a third
-place. Note also how each script detaches (`update.ps1:168` `Start-Process -WindowStyle Hidden`;
-`update.sh:265` a redirected subshell, the shape that fixed the MSYS pipe-hold) — an autostart
-wrapper that re-implements detachment will reintroduce that bug.
+the same script rather than invoke Python directly, so that logic is not duplicated into a second
+place. Note also how `update.sh` detaches (a redirected subshell, the shape that keeps a piped
+invocation from hanging) — an autostart wrapper that re-implements detachment will reintroduce that
+bug.
 
 ### 9.4 What must be true of the *org*, not just the process
 
@@ -554,8 +545,7 @@ Autostart makes the process survive. These make the org survive:
    continue on its own recognisance. Autonomy the user cannot audit after the fact is the thing to
    avoid; a bounded run they can review is not.
 5. **Log rotation and disk.** An instance running for months writes transcripts and event logs
-   forever. The virtual-disk soft cap already exists for sandboxed orgs (`disk.py`); an unattended
-   *non*-sandboxed instance has no such backstop.
+   forever. Nothing caps that growth, sandboxed or not.
 
 ### 9.5 Credential mode — an API key instead of the user's subscription
 

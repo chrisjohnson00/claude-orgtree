@@ -211,9 +211,7 @@ def hire_gate_passes_only_the_positive_case():
 
 def mcp_cards_are_stable_across_rollout_and_connection_changes():
     saved = (providers.codex_status, providers.codex_model_inventory,
-             openrouter.tiers, mcptool.deployment.current_policy)
-    mcptool.deployment.current_policy = lambda: type(
-        "Policy", (), {"allow_agent_restart": True})()
+             openrouter.tiers)
     try:
         providers.codex_status = lambda force=False: {
             "installed": True, "connected": True, "kind": "chatgpt"}
@@ -237,7 +235,7 @@ def mcp_cards_are_stable_across_rollout_and_connection_changes():
             assert tier["type"] == "string" and "enum" not in tier, name
     finally:
         (providers.codex_status, providers.codex_model_inventory,
-         openrouter.tiers, mcptool.deployment.current_policy) = saved
+         openrouter.tiers) = saved
 
 
 check("Astra metadata exists at seat 10 but is dark without evidence",

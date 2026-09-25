@@ -179,7 +179,7 @@ const fs = require('fs'), os = require('os'), path = require('path')
 const argv = process.argv.slice(2)
 if (argv.includes('--version')) { console.log('9.9.9 (synthcli)'); process.exit(0) }
 function arg(n) { const i = argv.indexOf(n); return i >= 0 && i + 1 < argv.length ? argv[i + 1] : null }
-let cfg = { mode: 'plain', limitText: 'limit', echoResult: false }
+let cfg = { mode: 'plain', limitText: 'limit', echoResult: false, deadDelayMs: 0 }
 try { cfg = Object.assign(cfg, JSON.parse(fs.readFileSync(process.env.SYNTHCLI_CONFIG, 'utf8'))) } catch (e) {}
 
 const sid = arg('--session-id') || arg('--resume') || 'no-session'
@@ -270,6 +270,13 @@ function serve(text) {
     if (cfg.mode === 'died-with-stderr') {
       fs.writeSync(2, 'Error: ENOSPC: no space left on device\n')
     }
+    // opt-in: some callers need the attempt to still be "in flight" when a
+    // retry timer elsewhere in the same test fires (~30ms was too fast for
+    // that race). Zero for every other caller, so nothing else pays for it.
+    if (cfg.deadDelayMs) {
+      const until = Date.now() + cfg.deadDelayMs
+      while (Date.now() < until) { /* busy-wait: a synchronous sleep */ }
+    }
     process.exit(1)
   }
   if (cfg.mode === 'hang') {
@@ -321,12 +328,18 @@ with open(_CLI, "w", encoding="utf-8") as _f:
 
 
 def set_mode(mode: str, echo_result: bool = False, limit_text: str = REAL,
-             reply: str = "ack.", api_error_status: int | None = None) -> None:
-    """Reprogram the stand-in for the next launch (it re-reads on every run)."""
+             reply: str = "ack.", api_error_status: int | None = None,
+             dead_delay_ms: int = 0) -> None:
+    """Reprogram the stand-in for the next launch (it re-reads on every run).
+
+    `dead_delay_ms` is opt-in, for `died-in-flight`/`died-with-stderr` callers
+    that need the attempt to still look "in flight" a beat after it starts —
+    the default of 0 keeps every other caller's timing exactly as it was."""
     with open(_CFG, "w", encoding="utf-8") as f:
         json.dump({"mode": mode, "limitText": limit_text,
                    "echoResult": echo_result, "replyText": reply,
-                   "apiErrorStatus": api_error_status}, f)
+                   "apiErrorStatus": api_error_status,
+                   "deadDelayMs": dead_delay_ms}, f)
     open(_COUNT, "w", encoding="utf-8").close()
 
 

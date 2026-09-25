@@ -41,7 +41,7 @@ def main() -> int:
     observed: list[bool] = []
     real_one = supervisor._run_one_turn
 
-    def fake_one(turn_slug, turn_node, text):
+    def fake_one(turn_slug, turn_node, text, *, probe_token=None):
         observed.append(bool(supervisor.state(
             turn_slug, turn_node).get("turn_activity")))
         return None

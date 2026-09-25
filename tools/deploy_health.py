@@ -1,7 +1,7 @@
 """Post-deploy health check: did the backend come up carrying the state it is
 supposed to have?
 
-WHY THIS EXISTS.  `update.ps1` used to end by asking `/api/orgs` for an HTTP
+WHY THIS EXISTS.  The deploy script used to end by asking `/api/orgs` for an HTTP
 200 and calling that healthy.  **An empty list is a perfectly good 200.**  So
 this sequence reported success: the SQLite cutover ships, someone rolls the
 code back without migrating the data back, the backend starts fine against a
@@ -53,7 +53,7 @@ THE FAILURE MODES THIS IS SHAPED AROUND.
     set is captured as diagnostic context ONLY -- a machine that was already
     in a strange state before this deploy is not failed for it here.
 
-USAGE (see update.ps1 section 5):
+USAGE (see update.sh section 5):
 
     python tools/deploy_health.py snapshot --data ROOT --port P --out FILE
     python tools/deploy_health.py verify  --port P --state FILE

@@ -8,9 +8,7 @@ orgtree_prime_restart (3,112), orgtree_self_restart (2,840) — see redteam's
 2026-09-10 report on this item. orgtree_work already has real coverage
 (test_work_items.py's DOCKET_DOCTRINE pins + this session's
 test_docket_doctrine_load_bearing_gaps.py) and is NOT repeated here.
-orgtree_watchdog has partial coverage (test_watchdog_visibility.py §6 pins
-cmd.exe/findstr/smoke/checks_run/"NOT IN YOUR SHELL" with a negative-control
-pair). orgtree_hire has one existing pin (desc mentions "superior" as the
+orgtree_watchdog has partial coverage in test_watchdog_visibility.py. orgtree_hire has one existing pin (desc mentions "superior" as the
 second mode, test_hire_schema_contract.py). orgtree_prime_restart and
 orgtree_self_restart have ZERO description-content coverage anywhere in the
 suite — verified by grep before writing this file (only schema-field/enum
@@ -89,7 +87,7 @@ something the JSON schema already carries elsewhere. The reasoning per tool:
       a post-condition with a silent-failure shape close to orgtree_hire's
       kickoff trap: skip it and a forced restart leaves an org stalled with
       nothing pointing at why.
-    · "never run update.ps1 / update.sh yourself" — guards a documented
+    · "never run update.sh yourself" — guards a documented
       real failure ("measured on a peer install: the log stopped at
       'building the UI' and the backend never restarted").
     SAFE TO CUT / SHRINK: "one launch per 5 minutes machine-wide" — a rate
@@ -180,7 +178,7 @@ MARKERS: dict[str, dict[str, str]] = {
         "post-forced-restart silent-stall risk — mirrors hire's kickoff trap":
             "THE AGENTS DO NOT RESUME BY THEMSELVES",
         "guards a documented real half-updated-install failure":
-            "never run update.ps1 / update.sh yourself",
+            "never run update.sh yourself",
     },
 }
 

@@ -21,7 +21,7 @@ WHERE IT LIVES AND WHY
 repo's existing home for operator scripts that are not part of the shipped
 package. It has to sit above both `backend/` and `frontend/` because it drives
 both, so neither of those is a candidate; the repo root is reserved for the
-handful of top-level entry points (`update.*`, `expose.ps1`).
+handful of top-level entry points (`update.sh`).
 
 HOW SUITES ARE FOUND — nothing is hardcoded
 -------------------------------------------
@@ -45,10 +45,6 @@ suite's own source is then read to work out how to run it:
     port was never the whole hazard anyway. The live rigs assert timing, and a
     suite measuring a ~1 s race while three others saturate the CPU is a suite
     that fails for the wrong reason.
-  * WINDOWS-BOUND — a suite asserting `WinError` / `MoveFileEx` /
-    `FILE_SHARE_DELETE` semantics is testing something POSIX does not do (on
-    Linux `os.replace` over an open file simply succeeds). Skipped with that
-    reason printed, never silently.
   * DRIFT GUARD — the suite, or a helper module it imports out of the tests
     directory, mentions a source-contract check. Its verdict is then hunted for
     in the output and reported separately from the pass/fail count.
@@ -70,6 +66,31 @@ refuses to start a suite whose source names that port, strips every `ORGTREE_*`
 variable out of the child environment (except the frontend runner's own
 `ORGTREE_TEST_*` knobs, none of which names a data root) so no suite can
 inherit a pointer at the real data directory, and never assigns a port itself.
+
+HERMETIC HOME
+-------------
+Every suite runs with `HOME` pointed at a throwaway directory and a stub `bin/`
+first on `PATH`, built once per run by `hermetic_home()`:
+
+  * `~/.claude.json` names a fixture account (`tests@example.invalid`) and
+    `~/.codex/auth.json` holds a fake API key — metadata only, no credential.
+  * `bin/claude` and `bin/codex` answer `--version` and exit 97 on anything
+    else, so a suite that reaches for a real CLI fails loudly instead of
+    billing a model. Suites that need a behaving CLI point `ORGTREE_CLAUDE*` /
+    `ORGTREE_CODEX` at their own fakes, as they always have.
+  * `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `XDG_CONFIG_HOME` are unset; git
+    identity comes from `GIT_AUTHOR_*` / `GIT_COMMITTER_*`; `PYTHONUSERBASE`
+    keeps the real user-site packages importable.
+  * `ORGTREE_TEST_REAL_HOME` names the real home, so live-root guards
+    (`_no_deploy.assert_isolated_data_root`) still refuse the operator's real
+    `~/orgtree`.
+  * `ORGTREE_TEST_STUB_BIN` names the stub directory, so a suite with a
+    real-CLI leg (`test_codex_mcp_approval.py`) skips it instead of failing
+    on the stub.
+
+So every machine — a signed-in dev box, a bare CI runner — presents the same
+host state to the provider hire gates, and a suite's result does not depend on
+who is logged in where it runs. A suite that sets its own `HOME` wins.
 
 DID IT FINISH? — the one question this runner used to be unable to answer
 -------------------------------------------------------------------------
@@ -111,11 +132,14 @@ docstring.
 from __future__ import annotations
 
 import argparse
+import atexit
 import concurrent.futures
 import glob
+import json
 import os
 import re
 import shutil
+import site
 import subprocess
 import sys
 import tempfile
@@ -128,24 +152,6 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 #: the operator's live deployment. Nothing here may go near it.
 FORBIDDEN_PORTS = ("7360",)
-
-#: THE ONE OPT-OUT from the forbidden-port rule, and deliberately awkward.
-#: The rule above greps SOURCE TEXT, so it cannot tell a socket bind from a
-#: dict literal — and two suites (`frozen-install`,
-#: `frozen-attestation-integration`) legitimately name the admin port as DATA:
-#: their fixtures assert what a frozen deployment's listener table must be, so
-#: the real number IS the thing under test and cannot be swapped for a fake
-#: one. Both were proven never to call `uvicorn.run`, `.serve()`, `socket()`
-#: or `bind()` (2026-09-03), and both had been silently dark in BOTH tiers.
-#:
-#: ⚠ THE OPT-OUT NEVER HIDES ANYTHING. A suite that declares it still
-#: prints in the plan, with its stated reason. The failure being guarded
-#: against is not "a suite ran" — it is "a suite stopped running and nobody
-#: noticed" — so the loud thing must be the opt-out, not the skip.
-#: Declaring it costs a sentence, which is the point: the author states WHY
-#: the port is data, and a reader can check the claim.
-PORT_LITERAL_IS_DATA = re.compile(
-    r"^ORGTREE_PORT_LITERAL_IS_DATA\s*=\s*[\"'](.+?)[\"']", re.M)
 
 #: Measured exceptions, not a suite list. `fast` is the argv for the fast tier;
 #: None means "full tier only", and `why` is printed wherever it is skipped.
@@ -176,7 +182,6 @@ SLOW = {
 _FLAG = re.compile(r"""["'](--[a-z][a-z0-9-]*)["']""")
 _EXCLUSIVE = re.compile(r"""\buvicorn\b|ORGTREE_(?:BRIDGE_|PUBLIC_)?PORT""")
 _DOCKERISH = re.compile(r"""["']docker["']""")
-_WINDOWS = re.compile(r"winerror|WinError|FILE_SHARE_DELETE|MoveFileEx", re.I)
 # deliberately NOT a bare /drift/ — several suites use the word in prose
 # ("the return shape had drifted") without carrying a guard, and a false
 # positive here turns the rot alarm into background noise
@@ -225,19 +230,16 @@ _TOTAL_LINE = re.compile(r"ALL\s+[\d,]+\s+CHECKS PASS|checks passed|^ℹ\s*pass\
 
 class Suite:
     def __init__(self, sid, cmd_fast, cmd_full, cwd, *, exclusive=False,
-                 windows_only=False, guard=False, guard_hint="",
-                 fast_why="", skip="", port_data=""):
+                 guard=False, guard_hint="", fast_why="", skip=""):
         self.id = sid
         self.cmd_fast = cmd_fast          # argv, or None = full tier only
         self.cmd_full = cmd_full
         self.cwd = cwd
         self.exclusive = exclusive
-        self.windows_only = windows_only
         self.guard = guard
         self.guard_hint = guard_hint
         self.fast_why = fast_why
         self.skip = skip                  # non-empty = never run, with reason
-        self.port_data = port_data        # non-empty = opted out of the port rule
 
     def cmd(self, full):
         return self.cmd_full if full else self.cmd_fast
@@ -269,11 +271,9 @@ def _store_backend_defaults_to_sqlite():
 
 def _interpreter():
     """The venv's python if there is one, else the one running this file."""
-    for rel in (os.path.join(".venv", "Scripts", "python.exe"),
-                os.path.join(".venv", "bin", "python")):
-        p = os.path.join(REPO, rel)
-        if os.path.exists(p):
-            return p
+    p = os.path.join(REPO, ".venv", "bin", "python")
+    if os.path.exists(p):
+        return p
     return sys.executable
 
 
@@ -314,14 +314,9 @@ def discover(py):
         # touch it, and quote the offending line so a false positive is
         # obvious rather than a silently missing suite.
         skip = ""
-        port_data = ""
-        declared = PORT_LITERAL_IS_DATA.search(src)
         for bad in FORBIDDEN_PORTS:
             hit = re.search(r"^.*[=(,:]\s*[\"']?" + bad + r"\b.*$", src, re.M)
-            if hit and declared:
-                # runs, and SAYS SO in the plan — see PORT_LITERAL_IS_DATA
-                port_data = declared.group(1).strip()[:70]
-            elif hit:
+            if hit:
                 skip = (f"uses the live deployment's port :{bad} — refusing to "
                         f"start it  ⟨{hit.group(0).strip()[:60]}⟩")
 
@@ -336,13 +331,11 @@ def discover(py):
             # default run stubs the daemon out
             exclusive=bool(_EXCLUSIVE.search(src)
                            or (_DOCKERISH.search(src) and "--docker" not in flags)),
-            windows_only=bool(_WINDOWS.search(src)),
             guard=bool(_GUARDISH.search(blob)),
             guard_hint=(_GUARDISH.search(blob).group(0)
                         if _GUARDISH.search(blob) else ""),
             fast_why=why,
             skip=skip,
-            port_data=port_data,
         ))
 
     # ------------------------------------------------------------- frontend
@@ -372,7 +365,63 @@ class Result:
                  "guard_state", "guard_lines", "truncated", "aborted")
 
 
-def child_env():
+#: `--version` answers so install probes see a CLI; anything else is a suite
+#: reaching for the real thing, which must fail loudly rather than bill a model.
+_STUB = """#!/bin/sh
+if [ "$1" = "--version" ]; then echo "{version}"; exit 0; fi
+echo "orgtree test stub: a suite tried to run the real {name} CLI ($*)" >&2
+exit 97
+"""
+
+
+def hermetic_home():
+    """A throwaway HOME and a stub `bin/` that make every suite see the same
+    machine: Claude and Codex installed and signed in, with fixture metadata
+    and no credentials. The hire gates (`provider_hire_gate`,
+    `tier_availability`) ask host-state questions — is the CLI on PATH, does
+    `~/.claude.json` name an account — and several suites answer them from a
+    uvicorn or MCP child that no in-process monkeypatch reaches, so the answer
+    has to live in the environment every suite inherits. Without this a suite
+    passes on a signed-in dev box and fails on a bare CI runner.
+
+    Returns `(root, overrides)`; `child_env` applies the overrides."""
+    root = tempfile.mkdtemp(prefix="orgtree-home-")
+    home = os.path.join(root, "home")
+    stubs = os.path.join(root, "bin")
+    os.makedirs(os.path.join(home, ".codex"))
+    os.makedirs(stubs)
+    with open(os.path.join(home, ".claude.json"), "w", encoding="utf-8") as fh:
+        json.dump({"oauthAccount": {
+            "accountUuid": "00000000-0000-4000-8000-000000000000",
+            "emailAddress": "tests@example.invalid"}}, fh)
+    with open(os.path.join(home, ".codex", "auth.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump({"OPENAI_API_KEY": "sk-test-hermetic-not-a-key"}, fh)
+    for name, version in (("claude", "2.1.0 (Claude Code)"),
+                          ("codex", "codex-cli 0.150.0")):
+        stub = os.path.join(stubs, name)
+        with open(stub, "w", encoding="utf-8") as fh:
+            fh.write(_STUB.format(name=name, version=version))
+        os.chmod(stub, 0o755)
+    overrides = {
+        "HOME": home,
+        "PATH": stubs + os.pathsep + os.environ.get("PATH", ""),
+        # user-site packages resolve from HOME; keep the real ones importable
+        "PYTHONUSERBASE": os.environ.get("PYTHONUSERBASE") or site.getuserbase(),
+        # ~/.gitconfig is gone, and suites that commit need an identity
+        "GIT_AUTHOR_NAME": "orgtree tests",
+        "GIT_AUTHOR_EMAIL": "tests@example.invalid",
+        "GIT_COMMITTER_NAME": "orgtree tests",
+        "GIT_COMMITTER_EMAIL": "tests@example.invalid",
+        # live-root guards still need to name the operator's real ~/orgtree
+        "ORGTREE_TEST_REAL_HOME": os.path.expanduser("~"),
+        # lets a suite with a real-CLI leg tell a stub from an install
+        "ORGTREE_TEST_STUB_BIN": stubs,
+    }
+    return root, overrides
+
+
+def child_env(hermetic=None):
     env = dict(os.environ)
     # no suite may inherit a pointer at the operator's real deployment.
     # ORGTREE_TEST_* is the one exemption: those are the frontend runner's own
@@ -384,6 +433,11 @@ def child_env():
     for k in [k for k in env
               if k.startswith("ORGTREE_") and not k.startswith("ORGTREE_TEST_")]:
         env.pop(k)
+    if hermetic:
+        # each of these would point a CLI back at the real config
+        for k in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"):
+            env.pop(k, None)
+        env.update(hermetic)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
     return env
@@ -391,11 +445,7 @@ def child_env():
 
 def _kill_tree(proc):
     try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                           capture_output=True)
-        else:
-            os.killpg(os.getpgid(proc.pid), 9)
+        os.killpg(os.getpgid(proc.pid), 9)
     except Exception:                                            # noqa: BLE001
         pass
     try:
@@ -453,14 +503,13 @@ def stopped_early(out):
     return not _SUMMARY.search(out[died:])
 
 
-def run_one(suite, cmd, timeout, logdir):
+def run_one(suite, cmd, timeout, logdir, env=None):
     r = Result()
     r.suite, r.checks, r.guard_lines = suite, None, []
     t0 = time.time()
-    kw = {} if os.name == "nt" else {"start_new_session": True}
-    proc = subprocess.Popen(cmd, cwd=suite.cwd, env=child_env(),
+    proc = subprocess.Popen(cmd, cwd=suite.cwd, env=env or child_env(),
                             stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, **kw)
+                            stderr=subprocess.STDOUT, start_new_session=True)
     try:
         out = proc.communicate(timeout=timeout)[0]
         r.rc = proc.returncode
@@ -589,9 +638,6 @@ def plan_for(suites, args):
             skipped.append((s, "--no-frontend"))
         elif s.skip:
             skipped.append((s, s.skip))
-        elif s.windows_only and os.name != "nt":
-            skipped.append((s, "asserts Windows filesystem semantics "
-                               "(WinError/MoveFileEx) — not meaningful here"))
         elif s.cmd(args.full) is None:
             skipped.append((s, SLOW.get("test_" + s.id.replace("-", "_") + ".py",
                                         {}).get("why", "full tier only")
@@ -668,8 +714,7 @@ def main():
               "and a sqlite-backed claim_data_root() migrates it.")
         print("Set ORGTREE_DATA to an explicit scratch path before running "
               "this, e.g.:")
-        print(r'  $env:ORGTREE_DATA = "C:\...\scratch\...\rig-data"; '
-              r'python tools\run_tests.py')
+        print('  export ORGTREE_DATA="$(mktemp -d)"; python tools/run_tests.py')
         return 2
 
     py = _interpreter()
@@ -695,8 +740,7 @@ def main():
         lane = "exclusive" if s.exclusive else "parallel "
         extra = " ".join(s.cmd(args.full)[2:]) or "—"
         print(f"  {lane}  {s.id:<24} {extra:<12}"
-              f"{'  ⚑ drift guard' if s.guard else ''}"
-              f"{'  ⚠ port literal declared DATA: ' + s.port_data if s.port_data else ''}")
+              f"{'  ⚑ drift guard' if s.guard else ''}")
     for s, why in skipped:
         print(f"  skipped    {s.id:<24} {why}")
     if args.list:
@@ -716,6 +760,15 @@ def main():
         else:
             print("\nNOTHING TO RUN — no suites were found.")
         return 2
+    print()
+
+    home_root, overrides = hermetic_home()
+    # atexit, not a trailing rmtree: a Ctrl-C or crash mid-run must not leave
+    # the fixture home behind in the temp dir
+    atexit.register(shutil.rmtree, home_root, ignore_errors=True)
+    env = child_env(overrides)
+    print(f"  home    {overrides['HOME']}  (hermetic: stub CLIs, fixture "
+          f"sign-in)")
     print()
 
     results = []
@@ -743,14 +796,15 @@ def main():
     # timing-sensitive suite is competing with anything for the CPU
     if par:
         with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-            futs = {pool.submit(run_one, s, s.cmd(args.full), timeout, logdir): s
+            futs = {pool.submit(run_one, s, s.cmd(args.full), timeout, logdir,
+                                env): s
                     for s in par}
             for f in concurrent.futures.as_completed(futs):
                 r = f.result()
                 results.append(r)
                 done(r)
     for s in exc:
-        r = run_one(s, s.cmd(args.full), timeout, logdir)
+        r = run_one(s, s.cmd(args.full), timeout, logdir, env)
         results.append(r)
         done(r)
 

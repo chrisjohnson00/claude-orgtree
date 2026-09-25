@@ -8,17 +8,16 @@ import {
   getMailById, getOrgMd,
   getAntigravityUsage, getAntigravityUsagePeek,
   getCodexUsage, getCodexUsagePeek, getOpenRouterUsage, getOpenRouterUsagePeek,
-  getOrgNet, getProviders, getSweepPreview, getTree,
+  getOrgNet, getProviders, getTree,
   getUsageAll, getUsagePeek, killAll, listOrgs,
   markRead, openWs,
   probeHub, putOrgMd,
-  resumeFrozen, runOp, saveDefaults, saveKiosk, saveSettings, sweepLegacy,
+  resumeFrozen, runOp, saveDefaults, saveKiosk, saveSettings,
 } from './api'
 import { fmtClock, fmtFull, localizeFreezeUntil } from './timefmt'
 import { bumpLive } from './livebus'
 import { AudienceFold, ConfirmModal, MailFolders, MailList, OrgCanvas, OrgRecord, RetiredFold } from './Canvas'
 import { KillSwitch } from './KillSwitch'
-import { DiskBrowser, DiskFullAlert } from './DiskBrowser'
 import { GitPanels, useGitPanels } from './git/panels'
 import type { GitContext } from './git/types'
 import {
@@ -47,7 +46,7 @@ import { ingestPulse, ingestStream, resetConvos } from './convo'
 import type {
   AskInfo, AudiencesPayload, CacheForecast, DefaultsPayload, HostPayload, InboxPayload,
   KioskSpecRequest,
-  MailEntry, OpRequest, OrgEvent, OrgListEntry, OrgMdPayload, SweepPreview, ToastFn,
+  MailEntry, OpRequest, OrgEvent, OrgListEntry, OrgMdPayload, ToastFn,
   ProvidersPayload,
   AntigravityEstimate as AgyEstimate,
   ToastUndo, TreeFrozen, TreeNode, TreePayload, UsageLimit, UsagePeek,
@@ -242,9 +241,6 @@ export default function App() {
   // (api.py annotate(), derived from the live tail), so it self-heals on the
   // same heartbeat as everything else and no event can be missed.
   const [showSettings, setShowSettings] = useState(false)
-  // the recovery browser: 'largest' = forced triage mode (the alert's path);
-  // 'last' = whatever mode was used last (the header chip's path)
-  const [showDisk, setShowDisk] = useState<false | 'last' | 'largest'>(false)
   const [showInbox, setShowInbox] = useState(false)
   // the mail a chat link or a reference targets — a REQUEST, so a second
   // click on the same message is a second request (`jumpTo` in shared.ts)
@@ -678,8 +674,8 @@ export default function App() {
         ))}
         {!orgs.length && <div className="dim pad">no organizations yet</div>}
       </nav>
-      {!BASE && <NewOrg onCreate={(name, dirs, kiosk, sandbox, diskMb) =>
-        createOrg(name, dirs, kiosk, sandbox, diskMb)
+      {!BASE && <NewOrg onCreate={(name, dirs, kiosk, sandbox) =>
+        createOrg(name, dirs, kiosk, sandbox)
           .then((r) => { refreshOrgs(); pick(r.slug) })
           .catch((e: Error) => toast([`error: ${e.message}`]))} />}
       {/* global default org settings (user spec): every NEW org is born with
@@ -776,22 +772,7 @@ export default function App() {
                         {costLabel(tree)} / ${tree.kiosk.spend_limit.toFixed(2)}
                       </span>
                 )}
-                {tree.disk ? (
-                  // the org disk chip (disk-migrated sandboxed orgs): the
-                  // whole footprint against the fs cap; click opens the
-                  // recovery browser (visitors get the full tool — ruled)
-                  <button className={'chip disk-chip'
-                    + ((tree.disk.used_mb ?? 0) >= (tree.disk.total_mb ?? Infinity) * 0.8 || tree.disk.blocked ? ' bad' : '')
-                    + (tree.disk.pending_mb != null ? ' pend' : '')}
-                    title={'org disk used / capacity — click to browse and free space'
-                      + (tree.disk.pending_mb != null
-                        ? ` · shrink to ${tree.disk.pending_mb} MB is staged` : '')}
-                    onClick={() => setShowDisk('last')}>
-                    <StorageIcon fontSize="inherit" /> {tree.disk.used_mb ?? '?'} / {tree.disk.total_mb ?? '?'} MB
-                    {tree.disk.pending_mb != null ? ` → ${tree.disk.pending_mb} MB pending` : ''}
-                    {tree.disk.full ? ' — FULL' : tree.disk.blocked ? ' — turns paused' : ''}
-                  </button>
-                ) : tree.kiosk?.storage_limit_mb && (
+                {tree.kiosk?.storage_limit_mb && (
                   tree.kiosk.storage_blocked
                     ? <span className="chip bad" title="over the workspace storage limit — delete files to unblock">
                         <StorageIcon fontSize="inherit" /> {tree.kiosk.storage_mb ?? '?'} / {tree.kiosk.storage_limit_mb} MB — writes blocked
@@ -1045,19 +1026,8 @@ export default function App() {
                   setDocketJump(jumpTo(item))
                   setShowDocket(true)
                 }} />
-              {/* hard-full is a STATE, not an event: the alert persists (and
-                  survives reloads) until usage drops; it never auto-opens
-                  the browser — it carries the button (user refinement) */}
-              {tree.disk?.full && (
-                <DiskFullAlert onOpen={() => setShowDisk('largest')} />
-              )}
               {!tree.public && <GitPanels panels={gitPanels.panels} close={gitPanels.close}
                 another={gitPanels.another} routes={gitRefs} toast={toast} />}
-              {showDisk && (
-                <DiskBrowser slug={slug} isPublic={!!tree.public} toast={toast}
-                  initialMode={showDisk === 'largest' ? 'largest' : undefined}
-                  close={() => { setShowDisk(false); refreshTree(slug) }} />
-              )}
               {showSettings && (
                 <SettingsPanel tree={tree} toast={toast}
                   close={() => { setShowSettings(false); refreshTree(slug) }} />
@@ -1217,7 +1187,7 @@ export default function App() {
 /** F-07 (user ruling 2026-08-04: "both, one modal"): the ONE advanced-org
  *  modal shell. The create form's advanced disclosure and the ⚙ settings
  *  panel both open this same surface; each pours in its own sections, and
- *  creation-only facts (kiosk, sandbox, disk type) render as LOCKED chips
+ *  creation-only facts (kiosk, sandbox) render as LOCKED chips
  *  outside creation — visible, never editable, so the modal can't offer to
  *  change what cannot change after birth. No save button of its own: the
  *  create form submits, and the settings panel keeps its ONE bottom save
@@ -1484,7 +1454,7 @@ export function UsageModal({ close }: { close: () => void }) {
 
 function NewOrg({ onCreate }: {
   onCreate: (name: string, dirs: string[], kiosk: KioskSpecRequest | null,
-             sandbox: boolean, diskMb: number | null,
+             sandbox: boolean,
              netAuto: boolean, netHubs: string[]) => void
 }) {
   const [open, setOpen] = useState(false)
@@ -1496,8 +1466,7 @@ function NewOrg({ onCreate }: {
   // subscription (the host holds the token; the sandbox never sees it)
   const [kiosk, setKiosk] = useState(false)
   // kiosk cap defaults (user ruling 2026-07-31): 30 credits · $50; storage
-  // starts at the 1 GB loose-cap default and is bumped to the 4096 MB disk
-  // minimum whenever the sandbox turns on (user ruling 2026-08-01)
+  // starts at the 1 GB loose-cap default
   const [credits, setCredits] = useState<number | string>(30)
   const [spend, setSpend] = useState<number | string>(50)
   const [storage, setStorage] = useState<number | string>(1024)
@@ -1537,9 +1506,7 @@ function NewOrg({ onCreate }: {
       onCreate(name, dirs.map((s) => s.trim()).filter(Boolean),
         kiosk ? {
           credits: +credits || 0, spend_limit: +spend || 0,
-          // sandboxed = the limit IS the org disk size; clamp to the floor
-          storage_limit_mb: sandboxed
-            ? Math.max(4096, +storage || 4096) : +storage || 0,
+          storage_limit_mb: +storage || 0,
           sandbox: sandboxed,
           auto_raise: autoRaise,
           max_scope: {
@@ -1550,7 +1517,6 @@ function NewOrg({ onCreate }: {
           },
         } : null,
         sandboxed,
-        sandboxed && !kiosk ? Math.max(4096, +storage || 4096) : null,
         netAuto, netHubs.map((s) => s.trim()).filter(Boolean))
       reset()
     }}>
@@ -1642,10 +1608,7 @@ function NewOrg({ onCreate }: {
             onChange={(e) => {
               setKiosk(e.target.checked)
               // kiosks default the sandbox ON — but only where Docker exists
-              if (e.target.checked && docker) {
-                setSandboxed(true)
-                setStorage((s) => Math.max(4096, +s || 0))
-              }
+              if (e.target.checked && docker) setSandboxed(true)
             }} />
           kiosk — publicly shareable via a secret URL, with hard limits
         </label>
@@ -1656,10 +1619,10 @@ function NewOrg({ onCreate }: {
             <label>spend $ <input type="number" min="0" step="0.5" value={spend}
               onChange={(e) => setSpend(e.target.value)} /></label>
             <label title={sandboxed
-              ? 'the org’s fixed-size virtual disk — system dirs and transcripts count inside it; 4096 MB minimum'
+              ? 'not enforced for sandboxed orgs'
               : 'loose workspace+scratch cap (checked between turns)'}>
-              {sandboxed ? 'disk MB' : 'storage MB'}
-              <input type="number" min={sandboxed ? 4096 : 0} value={storage}
+              storage MB
+              <input type="number" min="0" value={storage}
               onChange={(e) => setStorage(e.target.value)} /></label>
           </div>
         )}
@@ -1714,22 +1677,10 @@ function NewOrg({ onCreate }: {
         <label className={'row kiosk-sbx' + (docker ? '' : ' dim')}
           title={docker ? undefined : 'Docker is not installed — sandboxing unavailable'}>
           <input type="checkbox" checked={sandboxed && docker} disabled={!docker}
-            onChange={(e) => {
-              setSandboxed(e.target.checked)
-              // the sandbox rides a fixed-size disk — bump the storage field
-              // to its 4096 MB minimum (user ruling 2026-08-01)
-              if (e.target.checked) setStorage((s) => Math.max(4096, +s || 0))
-            }} />
+            onChange={(e) => setSandboxed(e.target.checked)} />
           sandboxed — agents run in a Docker container, isolated from this PC
           {!docker && <span className="dim"> (requires Docker)</span>}
         </label>
-        {sandboxed && !kiosk && (
-          <div className="kiosk-caps">
-            <label title="the org&rsquo;s fixed-size virtual disk — system dirs and transcripts count inside it; 4096 MB minimum">
-              disk MB <input type="number" min="4096" value={storage}
-                onChange={(e) => setStorage(e.target.value)} /></label>
-          </div>
-        )}
         {kiosk && !sandboxed && (
           <div className="dim kiosk-warn"><WarnIcon fontSize="inherit" /> without
             a sandbox the storage limit is enforced loosely — usage is checked
@@ -2346,10 +2297,10 @@ export function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => v
         <input type="number" min="0" step="1" style={{ width: '8em' }}
           value={d.default_top_grant ?? 50}
           onChange={(e) => set('default_top_grant', +e.target.value)} />
-        <div className="field-label">compaction threshold % (50–95)</div>
-        <input type="number" min="50" max="95" step="1" style={{ width: '8em' }}
-          value={Math.round((d.compact_at ?? 0.8) * 100)}
-          onChange={(e) => set('compact_at', (+e.target.value || 80) / 100)} />
+        <div className="field-label">compaction threshold % (20–95)</div>
+        <input type="number" min="20" max="95" step="1" style={{ width: '8em' }}
+          value={Math.round((d.compact_at ?? 0.5) * 100)}
+          onChange={(e) => set('compact_at', (+e.target.value || 50) / 100)} />
         <div className="field-label">default thinking effort (agents without
           their own setting inherit this, live)</div>
         <select value={d.default_effort ?? ''}
@@ -2429,7 +2380,7 @@ export function DefaultsPanel({ toast, close }: { toast: ToastFn; close: () => v
             saveDefaults({
               max_top_grant: d.max_top_grant,
               default_top_grant: d.default_top_grant,
-              compact_at: Math.round((d.compact_at ?? 0.8) * 100),
+              compact_at: Math.round((d.compact_at ?? 0.5) * 100),
               fable_limit_policy: d.fable_limit_policy,
               fable_filter_policy: d.fable_filter_policy,
               fable_filter_model: d.fable_filter_policy === 'auto-autopsy'
@@ -2490,60 +2441,6 @@ function CeilDirs({ dirs, onChange }: {
           onClick={() => onChange([...dirs, { path: '', mode: 'rw' }])}>+ add folder</button>
       </div>
     </div>
-  )
-}
-
-// The pre-migration backup sweep (disk orgs): the migration kept the legacy
-// volumes and host-dir copies for rollback — this shows their cost and drops
-// them behind an armed click. Renders nothing once the backup is gone.
-function SweepBlock({ slug, toast }: { slug: string; toast: ToastFn }) {
-  const [prev, setPrev] = useState<SweepPreview | null>(null)
-  const [armed, setArmed] = useState(false)
-
-  // mobile audit §3.3: onMouseLeave never fires on touch, so the armed latch
-  // used to stay live indefinitely — a multi-GB delete degraded to a single
-  // tap. A 3s timeout disarms everywhere (mouse users keep the leave path).
-  useEffect(() => {
-    if (!armed) return
-    const t = setTimeout(() => setArmed(false), 3000)
-    return () => clearTimeout(t)
-  }, [armed])
-  const [busy, setBusy] = useState(false)
-  useEffect(() => {
-    getSweepPreview(slug).then(setPrev).catch(() => setPrev(null))
-  }, [slug])
-  if (!prev || (!prev.volumes.length && !prev.host_dirs.length)) return null
-  const mb = (b: number) => `${Math.round(b / 1048576)} MB`
-  return (
-    <>
-      <div className="field-label">pre-migration backup (rollback for the
-        disk migration)</div>
-      <div className="hint">
-        {prev.volumes.length} legacy volume(s) ({mb(prev.volumes_bytes)}) +
-        host copies ({mb(prev.host_bytes)}) = {mb(prev.total_bytes)} held
-        only for rollback — the live data is on the org disk.
-      </div>
-      <button className={'disk-del' + (armed ? ' armed' : '')} disabled={busy}
-        onMouseLeave={() => setArmed(false)}
-        onClick={() => {
-          if (!armed) { setArmed(true); return }
-          setArmed(false)
-          setBusy(true)
-          sweepLegacy(slug)
-            .then((r) => {
-              toast(r.failures.length
-                ? [`swept with ${r.failures.length} failure(s): ${r.failures[0]}`]
-                : [`rollback backup deleted — freed ~${mb(prev.total_bytes)}`])
-              setPrev(null)
-            })
-            .catch((e: Error) => toast([`error: ${e.message}`]))
-            .finally(() => setBusy(false))
-        }}>
-        <DeleteIcon fontSize="inherit" />
-        {armed ? `really delete the rollback (~${mb(prev.total_bytes)})?`
-          : 'delete the pre-migration backup'}
-      </button>
-    </>
   )
 }
 
@@ -2623,7 +2520,7 @@ export function SettingsPanel({ tree, toast, close }: {
   const defTop = val<number | string>('defTop', tree.default_top_grant ?? 50)
   const setDefTop = set('defTop', defTop)
   const compactAt = val<number | string>('compactAt',
-    Math.round((tree.compact_at ?? 0.8) * 100))
+    Math.round((tree.compact_at ?? 0.5) * 100))
   const setCompactAt = set('compactAt', compactAt)
   const fablePolicy = val('fablePolicy', tree.fable_limit_policy ?? 'halt')
   const setFablePolicy = set('fablePolicy', fablePolicy)
@@ -2736,8 +2633,8 @@ export function SettingsPanel({ tree, toast, close }: {
         </SetGroup>
         <SetGroup title="Agent defaults">
           <SetRow label="compaction threshold"
-            hint="50–95%. Splits the agent when its context passes this.">
-            <input type="number" min="50" max="95" step="1" value={compactAt}
+            hint="20–95%. Splits the agent when its context passes this.">
+            <input type="number" min="20" max="95" step="1" value={compactAt}
               aria-label="compaction threshold percent"
               onChange={(e) => setCompactAt(e.target.value)} />
             <span className="dim">%</span>
@@ -2773,10 +2670,10 @@ export function SettingsPanel({ tree, toast, close }: {
               <label>spend $ <input type="number" min="0" step="0.5" value={kkSpend}
                 onChange={(e) => setKkSpend(e.target.value)} /></label>
               <label title={kk.sandbox
-                ? 'the org’s fixed-size virtual disk — 4096 MB minimum (already-migrated orgs resize via the storage browser)'
+                ? 'not enforced for sandboxed orgs'
                 : 'loose workspace+scratch cap (checked between turns)'}>
-                {kk.sandbox ? 'disk MB' : 'storage MB'}
-                <input type="number" min={kk.sandbox ? 4096 : 0} value={kkStorage}
+                storage MB
+                <input type="number" min="0" value={kkStorage}
                 onChange={(e) => setKkStorage(e.target.value)} /></label>
               {/* saved by the panel's bottom "save" — the old inline ✓ (and
                   the ceiling's own apply button) made three save surfaces
@@ -2959,7 +2856,6 @@ export function SettingsPanel({ tree, toast, close }: {
                 <div className="row" style={{ flexWrap: 'wrap' }}>
                   <span className="badge dim">{kk ? 'kiosk' : 'not a kiosk'}</span>
                   <span className="badge dim">{tree.sandboxed ? 'sandboxed (Docker)' : 'unsandboxed'}</span>
-                  {tree.disk && <span className="badge dim">fixed disk · resize via the storage browser</span>}
                 </div>
               </SetBlock>
             </SetGroup>
@@ -3034,20 +2930,17 @@ export function SettingsPanel({ tree, toast, close }: {
                     + 'visitors always clamp'} />
               </SetGroup>
             )}
-            {(tree.fable_lock || tree.disk) && (
+            {tree.fable_lock && (
               <SetGroup title="Maintenance">
-                {tree.fable_lock && (
-                  <SetBlock>
-                    <div className="row">
-                      <button className="danger" onClick={() =>
-                        saveSettings(tree.slug, { clear_fable_lock: true })
-                          .then((r) => { toast(r.warnings); close() })
-                          .catch((e: Error) => toast([`error: ${e.message}`]))}>
-                        <BlockIcon fontSize="inherit" /> clear the fable weekly-limit lock (your decree)</button>
-                    </div>
-                  </SetBlock>
-                )}
-                {tree.disk && <SweepBlock slug={tree.slug} toast={toast} />}
+                <SetBlock>
+                  <div className="row">
+                    <button className="danger" onClick={() =>
+                      saveSettings(tree.slug, { clear_fable_lock: true })
+                        .then((r) => { toast(r.warnings); close() })
+                        .catch((e: Error) => toast([`error: ${e.message}`]))}>
+                      <BlockIcon fontSize="inherit" /> clear the fable weekly-limit lock (your decree)</button>
+                  </div>
+                </SetBlock>
               </SetGroup>
             )}
           </>)}
@@ -3110,8 +3003,7 @@ export function SettingsPanel({ tree, toast, close }: {
                 || +kkStorage !== (kk.storage_limit_mb ?? 0)))
               jobs.push(saveKiosk(tree.slug, {
                 credits: +kkCredits || 0, spend_limit: +kkSpend || 0,
-                storage_limit_mb: kk.sandbox
-                  ? Math.max(4096, +kkStorage || 4096) : +kkStorage || 0 }))
+                storage_limit_mb: +kkStorage || 0 }))
             if (ms && ceil) {
               const scope = {
                 tools: { ...ceil,

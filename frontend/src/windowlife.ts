@@ -39,7 +39,10 @@ export function reloadWindows() {
   if (reloadStarted) return
   flushWindowDrafts()
   reloadStarted = true
-  window.location.reload()
+  // `globalThis`, not `window`: this module has no React/API imports so a
+  // test can stub the reload without a real navigation, and `globalThis` is
+  // the one binding every harness (real browser or jsdom) actually controls.
+  globalThis.location.reload()
 }
 export function backendRestart(instance: string) {
   if (reloadStarted) return

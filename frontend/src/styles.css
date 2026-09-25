@@ -3707,94 +3707,6 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 }
 
 /* -------------------------------------------------------------------- toasts */
-/* ------ the org-disk recovery browser + hard-full alert ------ */
-/* the alert is a persistent STATE banner, deliberately not a toast: screen-
-   wide, error-styled, above the canvas and scrims, below toasts (z 100) */
-.disk-alert {
-  position: fixed; top: 0; left: 0; right: 0; z-index: 90;
-  display: flex; align-items: center; gap: 10px; justify-content: center;
-  padding: 10px 16px; font-size: 13px;
-  background: color-mix(in srgb, var(--bad) 18%, var(--panel));
-  border-bottom: 2px solid var(--bad); color: var(--bad);
-}
-.disk-alert b { color: inherit; }
-.disk-alert button {
-  border: 1px solid var(--bad); color: var(--bad); background: none;
-  border-radius: 4px; padding: 3px 12px; font-size: 12px;
-}
-.disk-alert button:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); }
-.disk-overlay { z-index: 55; }   /* above modals (20), below the picker (60) */
-.disk-browser { width: min(760px, 92vw); display: flex; flex-direction: column; }
-/* height only, in a compound selector: same reasoning as `.doc-reader` */
-.settings.disk-browser { height: 84vh; }
-.disk-usage { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 2px 0 8px; }
-.disk-usage.warn { color: var(--work); }
-.disk-usage.bad { color: var(--bad); }
-.disk-bar {
-  flex: 1; height: 8px; border-radius: 4px; background: var(--input);
-  border: 1px solid var(--line); overflow: hidden;
-}
-.disk-bar-fill { height: 100%; background: var(--accent); }
-.disk-usage.warn .disk-bar-fill { background: var(--work); }
-.disk-usage.bad .disk-bar-fill { background: var(--bad); }
-.disk-list { overflow-y: auto; flex: 1; min-height: 120px; border-top: 1px solid var(--line-soft); }
-.disk-row {
-  display: flex; align-items: center; gap: 8px; padding: 3px 6px;
-  font-size: 12px; border-bottom: 1px solid var(--line-soft); cursor: pointer;
-}
-.disk-row:hover { background: var(--panel-2); }
-.disk-row.blocked { opacity: .55; cursor: default; }
-.disk-size { width: 72px; text-align: right; flex: none; }
-.disk-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.disk-cls { font-size: 10.5px; color: var(--dim); flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.disk-cls.ok { color: var(--accent); }
-.disk-del {
-  border: 1px solid var(--bad); color: var(--bad); background: none;
-  border-radius: 4px; padding: 3px 10px; font-size: 12px;
-}
-.disk-del.armed { background: var(--bad); color: var(--panel); }
-.disk-grow { width: 110px; }
-.disk-grow-note { font-size: 10.5px; }
-/* the pending-shrink divergence chip — amber from the existing warn hue
-   (var(--work), the validated palette), both numbers visible at a glance */
-.disk-pending {
-  display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
-  padding: 2px 8px; border: 1px solid var(--work); color: var(--work);
-  border-radius: 4px; background: color-mix(in srgb, var(--work) 10%, transparent);
-}
-.disk-pending button {
-  border: 1px solid var(--work); color: var(--work); background: none;
-  border-radius: 3px; padding: 1px 6px; font-size: 10.5px;
-}
-.disk-pending button:hover { background: color-mix(in srgb, var(--work) 15%, transparent); }
-.disk-vmcap {
-  font-size: 11px; padding: 4px 8px; margin-bottom: 6px;
-  border-left: 2px solid var(--work); background: var(--panel-2);
-  border-radius: 0 4px 4px 0;
-}
-.disk-tabs { display: inline-flex; gap: 2px; margin-left: 12px; }
-.disk-tabs button {
-  border: 1px solid var(--line); background: none; border-radius: 4px;
-  padding: 2px 10px; font-size: 11px; color: var(--dim);
-}
-.disk-tabs button.on { color: var(--accent); border-color: var(--accent); }
-.disk-crumbs {
-  display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
-  font-size: 11.5px; padding: 2px 0 6px; color: var(--dim);
-}
-.disk-crumbs .crumb {
-  border: none; background: none; padding: 1px 3px; font-size: inherit;
-  color: var(--accent); border-radius: 3px;
-}
-.disk-crumbs .crumb:hover { background: var(--panel-2); }
-.disk-dirlink {
-  border: none; background: none; text-align: left; padding: 0;
-  color: inherit; font-size: inherit; cursor: pointer;
-}
-.disk-dirlink:hover { color: var(--accent); }
-.disk-chip { cursor: pointer; }
-.disk-chip.pend { border-color: var(--work); color: var(--work); }
-
 /* above every scrim (18-20) and the folder picker (60): a toast's
    click-to-dismiss must stay reachable while a modal is open */
 .toasts {
@@ -5615,8 +5527,7 @@ label.set-row { cursor: pointer; }
    so an absolutely positioned panel inside it is already in window
    coordinates. z-index comes from modalZIndex() inline, band 21–29: ABOVE the
    centred overlays (20) so a pinned panel stays usable while another surface
-   opens over it, below the disk browser (55), the picker (60), the lightbox
-   (95) and toasts (100). */
+   opens over it, below the picker (60), the lightbox (95) and toasts (100). */
 .overlay.overlay-pinned {
   /* not a modal any more: no dimming, and every click falls through to what
      is behind it. The panel takes its own pointer events back below. */
@@ -5736,13 +5647,6 @@ label.set-row { cursor: pointer; }
    whose backdrop covers that window. Pinned, PinFrame's own inline z-index
    wins over this and the dialog joins the band like any other window. */
 .modalpin-over > .overlay { z-index: 31; }
-/* the disk browser's mode tabs and close button, lifted out of its title h3 so
-   a pinned window does not hide them with the duplicated heading. A row of its
-   own under the title — the same shape the settings panels' tab strips already
-   have — and the `.spacer` that was inert inside a block-level h3 now does
-   what the markup always said it did. */
-.disk-head { display: flex; align-items: center; margin: 0 0 6px; }
-.disk-head .disk-tabs { margin-left: 0; }
 /* mobile presents these surfaces as full-screen sheets and has no window to
    pin to (D-125). The store is not honoured there (modalPinsAvailable), and
    the control is not offered either. */

@@ -190,7 +190,7 @@ panelTest('§1.3 a spent tier gives BOTH how long and when', async () => {
   // "until when" — the wall clock, which is the half the relative form cannot
   // give and the half you need to decide whether to wait
   const when = new Date(NOW + 2 * HOUR + 13 * 60_000)
-    .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Jerusalem' })
   assert.ok(line.includes(when), `${JSON.stringify(line)} lacks ${when}`)
 })
 

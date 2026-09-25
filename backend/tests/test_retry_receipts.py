@@ -212,7 +212,9 @@ def sec_render() -> None:
 # ══════════════════════════════════════════════════════════════════════════ §2
 
 def _freeze_once(slug: str, nid: str, msg) -> dict:
-    rig.set_mode("died-in-flight")
+    # the delay widens death-since past this suite's own margins (§2 wants
+    # >=2ms, §3 wants >=50ms) — a bare exit landed in ~30ms, too tight for §3
+    rig.set_mode("died-in-flight", dead_delay_ms=100)
     rig.run_turn(slug, nid, msg)
     n = rig.node(slug, nid)
     fixture(bool(n.get("frozen")) and bool(n["frozen"].get("connection")),
@@ -390,7 +392,7 @@ def sec_resume_compose() -> None:
         through the real loop; the next resume must carry ONE banner, ONE
         paragraph, the payload once — not the previous banner nested."""
         fixture("text" in got, "no carrier from the first resume")
-        rig.set_mode("died-in-flight")
+        rig.set_mode("died-in-flight", dead_delay_ms=100)
         rig.run_turn(slug, nid, dict(got))          # the real retry, dying
         n2 = rig.node(slug, nid)
         fixture(bool(n2.get("frozen")) and (n2.get("net_fail_run") or 0) == 2,

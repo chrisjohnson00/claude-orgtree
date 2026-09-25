@@ -27,12 +27,11 @@ the four ways an instrument like this quietly stops being one.
 
 ⚠ §2 IS A SECURITY CHECK, NOT A TIDINESS ONE, and it is why the record logs a
 route TEMPLATE rather than a path. This middleware sits on `app`, and the
-BRIDGE listener wraps that same object. `main` deliberately passes
-`access_log: False` for that listener in frozen mode because THE ORG CREDENTIAL
-RIDES IN THE URL — the frozen CLI cannot attach a private header. A record that
-logged concrete paths would re-open exactly that hole from a different file,
-and it would do so silently, on a listener no one was thinking about while
-writing a performance tool. Templates carry no parameter values, so the
+BRIDGE listener wraps that same object, and THE ORG SECRET RIDES IN THE
+`/anthropic/<secret>/…` URL — the CLI cannot attach a private header. A record
+that logged concrete paths would write that secret to the log, and it would do
+so silently, on a listener no one was thinking about while writing a
+performance tool. Templates carry no parameter values, so the
 property holds on every listener without a policy check anyone can forget.
 
 ⚠ §4 IS THE ONE THAT ENCODES THE LESSON. The system already HAD a slow-request

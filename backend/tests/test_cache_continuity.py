@@ -645,7 +645,9 @@ check("tree preview catches pending semantic changes without transcript I/O or m
 
 
 def source_contract() -> None:
-    run = inspect.getsource(S._run_one_turn)
+    # _run_one_turn is now a thin wrapper; the pinned body lives in
+    # _run_one_turn_recorded.
+    run = inspect.getsource(S._run_one_turn_recorded)
     assert run.index("_cache_forecast_now") < run.index("org.take_mail")
     assert 'if not is_cmd:' in run
     assert '"kind": "cache_forecast"' in run and '"forecast"' in run

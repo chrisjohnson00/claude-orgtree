@@ -66,7 +66,7 @@ these names at anyone as current.
 > `_leash`, so its fixed port is currently doubling as orphan detection and
 > must not be changed without porting the leash), `mcptool` (a flat `PORT =`
 > constant, no override), and inline literals in `api-surface`,
-> `external-mail`, `sandbox` and `frozen-policy-enforcement`. Different suites
+> `external-mail` and `sandbox`. Different suites
 > use different numbers, so the collision is only ever a suite against ITSELF.
 
 `main` is NOT green and has not been for a while. "Expect green" is the wrong
@@ -281,26 +281,16 @@ condition it was written for — the same drift-detector shape as `harvest` and
 `turn-lifecycle`.
 
 
-### ⚠ The result also depends on YOUR CHECKOUT: a junctioned node_modules
+### ⚠ The result also depends on YOUR CHECKOUT: a linked node_modules
 
 A frontend change is untestable without `frontend/node_modules`, and the team
 pattern is to point at the shared checkout's copy rather than install a second
 one.
 
-⚠ **DO NOT USE `ln -s` FROM GIT BASH FOR THIS.** Without the native-symlink
-privilege MSYS silently falls back to COPYING, so the command that looks like
-a link duplicates the entire `node_modules` tree into your worktree. Measured
-2026-09-04: it produced a real directory (`Attributes: Directory`, no
-`ReparsePoint`) that had to be removed with `rmdir /s`. The earlier version of
-this note recommended exactly that command.
+    ln -s <checkout>/frontend/node_modules frontend/node_modules
 
-Use a junction from PowerShell, which is a real reparse point:
-
-    New-Item -ItemType Junction -Path frontend\node_modules `
-      -Target E:\Libraries\Desktop\claude-orgtree\frontend\node_modules
-
-Check what you got before trusting it — `(Get-Item <path> -Force).Attributes`
-must say `ReparsePoint`, and `.Target` must name the shared copy.
+Check what you got before trusting it — `readlink frontend/node_modules` must
+name the shared copy.
 
 That makes esbuild resolve, so **`crash-reports` PASSES for you**, like a run
 inside `E:\`. Same suite, opposite result, and this one is
@@ -319,10 +309,9 @@ yours:
 > pristine `3ba27db` worktree. Baseline it before reading anything into it.
 
 ⚠ The suite needs `frontend/node_modules`, which a fresh git worktree does not
-have. Rather than a second `npm ci`, junction it at the shared checkout's copy
-— `New-Item -ItemType Junction` in PowerShell (`cmd /c mklink` does not work
-through Git Bash). Remove the junction with `rmdir` BEFORE `git worktree
-remove`, or the removal fails with `Invalid argument`.
+have. Rather than a second `npm ci`, symlink it at the shared checkout's copy
+(`ln -s <checkout>/frontend/node_modules frontend/node_modules`). Remove the
+symlink with `rm` BEFORE `git worktree remove`.
 
     cd frontend && node tests/run.mjs            # all of it, ~33 s
     cd frontend && node tests/run.mjs convo      # one file by substring
@@ -452,8 +441,8 @@ Named, so nobody re-derives the list: `sandbox`, `net-identity`,
 `kiosk-ceiling-identity`, `working-checkup`, `working-cache-lifecycle`,
 `prompt-cache-stability`, `prompt-view-race`, `provider-limit-freeze`,
 `provider-switch-session`, `status-zero-vs-unknown`,
-`report-guidance-identity`, `warm-native-identity`, `frozen-network-policy`,
-`frozen-policy-enforcement`, `d211-cache-break-emission`, `mcp-tool-count`,
+`report-guidance-identity`, `warm-native-identity`,
+`d211-cache-break-emission`, `mcp-tool-count`,
 `warmpool`. Treat that as a sample of what CAN phantom-fail, not the closed
 set — every one of these spawns a backend, a port or a temp tree, and this
 machine routinely has several agents' rigs live at once.
@@ -779,13 +768,11 @@ thing to write is:
 ```
 
 which opens no socket at all — `server` is scope metadata for an in-process
-call. Three suites were dark when this was found, in BOTH tiers:
+call. A suite was dark when this was found, in BOTH tiers:
 
 | suite | verdict |
 |---|---|
 | `process-control` | **false positive.** Passed every time it was run by hand ("process control OK, 7 audit rows") and had been invisible to the runner. Fixed: the fake scope now uses a port that is not the deployment's. |
-| `frozen-install` | **false positive, and NOT fixable by changing the number.** Its 7360 is inside a `launch_inventory` fixture asserting what a frozen deployment's listener table must look like — the real port is the thing under test. Grep confirms it never calls `uvicorn.run`, `.serve()`, `socket()` or `bind()`. |
-| `frozen-attestation-integration` | same as above, same fixture shape, same zero binds. |
 
 `test_tree_render_cost.py` was dark for the same reason on the day it landed,
 and its results had already been quoted in a report before anyone noticed.
@@ -793,7 +780,7 @@ and its results had already been quoted in a report before anyone noticed.
 **What to do about it**
 
 * **Writing a suite with a hand-built ASGI scope?** Use any port except the
-  deployment's — `7999` is what the three fixed suites use — and say why in a
+  deployment's — `7999` is the conventional choice — and say why in a
   comment, without writing the forbidden number.
 * **After adding ANY suite, run `python tools/run_tests.py --list` and find
   your suite in the plan.** Not in the summary count — in the plan. `--list`
@@ -802,46 +789,12 @@ and its results had already been quoted in a report before anyone noticed.
 * **Never trust `RUN COMPLETE suites=N/N` to mean your suite ran.** N counts
   what was *planned*, and a skipped suite was never planned.
 
-### Resolved, 2026-09-03 — the opt-out marker (coordinator's ruling)
-
-The guard is unchanged for anything that does not opt in. A suite whose port
-literal is genuinely DATA declares it, in one line, and must say why:
-
-    ORGTREE_PORT_LITERAL_IS_DATA = "the admin port appears only in
-    launch_inventory fixtures asserting what a frozen deployment's listener
-    table must be; this suite opens no socket (verified <date>)"
-
-⚠ **The opt-out is louder than the skip, on purpose.** A declaring suite still
-prints in the plan, carrying its stated reason:
-
-    exclusive  frozen-install   —   ⚠ port literal declared DATA: the admin port appears only in …
-
-The failure this area guards against is not "a suite ran" — it is "a suite
-stopped running and nobody noticed". So the visible thing has to be the
-opt-out. Declaring costs a sentence, which is the point: the author states
-why, and a reader can check the claim.
-
-⚠ **The marker must sit AFTER `from __future__ import annotations`** — that
-import must be the first statement in the file, so putting the declaration
-above it is a `SyntaxError` that surfaces as the suite failing to start.
-
-**Both `frozen-*` suites were then run and both PASS — 20/20 and 41/41. 61
-checks that had never been executing.**
-
-Plan over the day: `132 to run, 6 skipped` → **`137 to run, 1 skipped`** (the
-last is `message-visibility-live`, a deliberate `--full`-tier deferral).
-
 ⚠ **If you edit the guard's regex, test it in BOTH directions.** Editing that
 line through a shell heredoc turned its `` into a literal BACKSPACE byte,
 which matches nothing: the guard was silently disabled and the suites appeared
 to run for the right reason while nothing was being checked. It looks exactly
-like success. Prove an unmarked suite carrying the port is still skipped (a
-throwaway fixture does it in seconds) as well as that a marked one runs.
-
-A cleaner fix exists for whoever owns those suites: reference the port through
-a constant so the guard never sees a literal. Not taken here — `PORT` is
-env-derived (`api.py`, `ORGTREE_PORT`), so threading it into an attestation
-fixture changes what that fixture asserts.
+like success. Prove a suite carrying the port is still skipped (a
+throwaway fixture does it in seconds).
 
 ## The third trap: a `StringIO` capture cannot see a cp1252 log stream
 

@@ -187,14 +187,13 @@ when the machine is quiet. An explicit forced restart stops working agents
 first and requires a reason; those agents need to be messaged afterwards to
 resume work. An optional deadline on a primed restart can force the deploy
 if quiet never arrives, with a wake-up for interrupted agents. Restart notices
-identify the running commit. Works on Windows (`update.ps1`) and Linux/macOS
-(`update.sh`).
+identify the running commit. The deploy is `update.sh`.
 
 **Share an org with the world — kiosk mode.** Any org can be exposed
 through a **preauthenticated secret URL** on a separate public listener,
 with hard caps on credits, spend, and workspace storage; the admin app
-itself never leaves 127.0.0.1. `expose.ps1` opens a Cloudflare quick tunnel
-so outsiders reach it with zero setup on your router. Details below.
+itself never leaves 127.0.0.1. A Cloudflare quick tunnel lets outsiders reach
+it with zero setup on your router. Details below.
 
 The full interaction manual — every gesture, badge, and panel — is
 [docs/ui-guide.md](docs/ui-guide.md).
@@ -208,21 +207,15 @@ The full interaction manual — every gesture, badge, and panel — is
   Code CLI as its harness, but no separate OpenRouter CLI or Anthropic login
   for that route; it uses the key's prepaid credits.
 - **Python 3.11+**
-- **Node.js 18+** (builds the frontend; also used to invoke the Claude Code
-  CLI in a newline-safe way on Windows)
-- Windows, macOS, or Linux for the host-mode core (ledger, turns, canvas,
-  kiosk URLs). Developed and battle-tested on Windows; POSIX paths are
-  handled but less traveled — issues welcome.
+- **Node.js 18+** (builds the frontend)
+- **Linux** for the host.
 - **Sandboxed orgs** (and kiosks, which default the sandbox on) additionally
-  require **Windows with Docker Desktop's WSL2 backend**: each org's virtual
-  disk is loop-mounted inside the docker-desktop WSL distro and the backend
-  reads it via `\\wsl.localhost`.
+  require a running **Docker** daemon the backend's user can reach.
 
 ## Installation
 
-The update scripts below do all of this for you, including creating the
-virtualenv — `./update.sh` (Linux/macOS/Git Bash) or `update.ps1` (Windows) on
-a fresh clone is a complete install. By hand:
+`./update.sh` does all of this for you, including creating the virtualenv, so
+running it on a fresh clone is a complete install. By hand:
 
 ```bash
 git clone https://github.com/Maurdekye/claude-orgtree.git
@@ -230,7 +223,7 @@ cd claude-orgtree
 
 # a virtualenv, so the installed set is exactly what requirements.txt says
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\Activate.ps1
+source .venv/bin/activate
 
 # backend dependencies
 pip install -r requirements.txt
@@ -265,11 +258,11 @@ The supervisor auto-detects this private install and prefers it; your global
 `claude` stays untouched. Without it, messages to a busy agent deliver when
 its current response ends instead of after its next tool call.
 
-You only need that command for a **first** install. `update.ps1` / `update.sh`
-manage the pin from then on: each deploy compares what is installed against
+You only need that command for a **first** install. `update.sh` manages the
+pin from then on: each deploy compares what is installed against
 `backend/orgtree/clipin.py`'s `PIN` and upgrades it in place if it is behind —
-in the window between stopping and starting the backend, because a running
-`claude.exe` cannot be overwritten on Windows. It is a floor, not an equality:
+in the window between stopping and starting the backend, so no running turn
+has the CLI replaced under it. It is a floor, not an equality:
 a **newer** CLI than the pin is reported and left alone, never rolled back. If
 the upgrade fails the deploy still restarts and says so; nothing needs to be
 uninstalled by hand.
@@ -304,8 +297,7 @@ npm install --prefix ~/orgtree/codex @openai/codex@0.153.3 --save-exact
 npx --prefix ~/orgtree/codex codex login
 
 # Antigravity: flash (seat 1), pro (2) — Google's own installer, then sign in once
-winget install Google.AntigravityCLI                          # Windows
-curl -fsSL https://antigravity.google/cli/install.sh | bash   # macOS / Linux
+curl -fsSL https://antigravity.google/cli/install.sh | bash
 agy
 ```
 
@@ -353,23 +345,20 @@ listener before other work. Details and the trust
 model: [hub/README.md](hub/README.md) and
 [docs/setup-guide.md §3](docs/setup-guide.md).
 
-**Updating:** run `update.ps1` (or double-click `update.cmd`) on Windows, or
-`./update.sh` on Linux/macOS — the two are step-for-step equivalents. Either
-pulls the latest changes, rebuilds the UI, installs any new dependencies, and
-restarts the backend in the background with a health check. `update.sh` also
-runs under Git Bash on Windows. Agents can trigger the same deploy from
-inside an org with the `orgtree_self_restart` tool (top-level or
-user-audience holders; both platforms), or schedule it with
+**Updating:** run `./update.sh`. It pulls the latest changes, rebuilds the UI,
+installs any new dependencies, and restarts the backend in the background with
+a health check. Agents can trigger the same deploy from inside an org with the
+`orgtree_self_restart` tool (top-level or user-audience holders), or schedule
+it with
 `orgtree_prime_restart`. The deploy runs detached and the hub container can
 be rebuilt in the same call without ever touching its data volume.
 
-Both accept a deliberately awkward `-ExposeAdmin` / `--expose-admin` switch,
+It accepts a deliberately awkward `--expose-admin` switch,
 which sets `ORGTREE_EXPOSE_ADMIN` and binds the **admin** API to `0.0.0.0`
 instead of loopback. The admin API has no password, token or login —
 reaching the port *is* the credential — so only do this behind a VPN, an SSH
 tunnel, or an authenticating reverse proxy. The environment variable is what
-actually gates it, on purpose: a service definition (Task Scheduler,
-systemd) can set it directly with no switch needed, which the old
+actually gates it, on purpose: a service definition (systemd) can set it directly with no switch needed, which the old
 command-line-only design couldn't offer. What's unchanged is that no *org
 setting or doc key* can turn it on, and it's stripped from every agent's own
 environment regardless (`clean_env`) — so no agent can either. To share one
@@ -491,18 +480,26 @@ credit cap, spend limit, storage limit, the share URL with **copy** and
 **pause/reactivate** for the URL.
 
 ```bash
-ORGTREE_PUBLIC_PORT=7361 python -m orgtree.api   # update.ps1 sets this by default
+ORGTREE_PUBLIC_PORT=7361 python -m orgtree.api   # update.sh sets this by default
 ```
 
-**Reaching it from the internet — no port forwarding needed:** run
-`expose.ps1`. It downloads `cloudflared` on first use and opens a
-**Cloudflare quick tunnel** to the public listener: you get a random
-`https://….trycloudflare.com` hostname that works from anywhere, over
-HTTPS, for as long as the window stays open — no account, no router
-changes, and the share URLs shown in the app switch to the live tunnel
-hostname while it runs. Close it and the URL dies. (For a permanent,
-stable hostname later: a named Cloudflare tunnel with your own domain —
-then set `ORGTREE_PUBLIC_ORIGIN`.)
+**Reaching it from the internet — no port forwarding needed:** open a
+**Cloudflare quick tunnel** to the public listener with
+[`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/):
+
+```bash
+cloudflared tunnel --url http://localhost:7361
+# copy the printed https://<random>.trycloudflare.com URL, then:
+echo 'https://<random>.trycloudflare.com' > "${ORGTREE_DATA:-$HOME/orgtree}/.public_origin"
+```
+
+The hostname works from anywhere, over HTTPS, for as long as `cloudflared`
+runs — no account and no router changes. While `.public_origin` holds the live
+hostname, the share URLs shown in the app use it; delete the file when the
+tunnel stops. Stop `cloudflared` and the URL dies. (For a permanent, stable
+hostname: a named Cloudflare tunnel with your own domain — then set
+`ORGTREE_PUBLIC_ORIGIN`.) Never tunnel the admin port (7360): it has no
+password, token or login, so reaching it is full control of every org.
 
 For each kiosk org, enforced **server-side on the public listener** (you, on
 the admin side, keep full rights in the same org — visit it like any other):
@@ -522,11 +519,8 @@ the admin side, keep full rights in the same org — visit it like any other):
   they can clean up before anything bites. Breaching it does *not* freeze
   anyone: file creation and writes in the workspace are blocked (on Windows,
   enforced at the OS level with delete rights kept) until enough files are
-  deleted — the block lifts automatically. (That is the *unsandboxed*
-  kiosk's loose cap. A sandboxed kiosk's storage limit is the size of its
-  virtual disk: soft tiers warn at 80% and pause new turns at 90%, and at
-  100% writes fail with ENOSPC — disk orgs are never frozen or stopped for
-  storage, and the in-app recovery browser works even then.)
+  deleted — the block lifts automatically. This loose cap applies only to
+  *unsandboxed* kiosks; sandboxed orgs have no storage cap.
 
 Kiosk orgs are a **distinct type**: born as kiosks with their limits set at
 creation (the *new organization* form's kiosk checkbox), never converted to
@@ -540,40 +534,22 @@ it): all its agents' turns run inside one dedicated **Docker container** —
 real terminal use with no view of your machine: no host filesystem, no host
 processes, per-container CPU/memory caps. The org workspace is the one
 deliberately mounted window; session transcripts persist in the agent home
-on the org's virtual disk (next paragraph) so resume, chat views, and
-read-down keep working — for a migrated org, `<data>/sandboxes/<slug>/`
-holds only the frozen pre-migration rollback copy, while the live home
-(transcripts included) rides the disk, reachable via `\\wsl.localhost` and
-the in-app storage browser.
-The container reaches the backend only through a **bridge listener**
-(`ORGTREE_BRIDGE_PORT`, default 7362) gated by a per-org secret that exists
-nowhere but inside that container. Requires Docker Desktop running; the
-image builds automatically on first use (`sandbox/Dockerfile`).
+(`<data>/sandboxes/<slug>/home` on the host) so resume, chat views, and
+read-down keep working.
+The container reaches the backend only through a **bridge listener** (`ORGTREE_BRIDGE_PORT`, default 7362) gated by
+a per-org secret that exists nowhere but inside that container. Containers reach the bridge at `host.docker.internal`
+(mapped to Docker's host gateway), so a host firewall must allow traffic from the docker0 bridge to that port.
+Requires the Docker Engine running (native Linux, `sudo systemctl start docker`); the image builds automatically on
+first use (`sandbox/Dockerfile`). The image's `agent` user is built with the backend's own uid and gid, so the agent
+and the backend can both write the bind-mounted home, workspace, and scratch.
 
-**Every sandboxed org rides ONE virtual disk with a real filesystem cap.**
-The org's whole state — system dirs (`sudo apt install` and config edits work
-and persist), the agent home *including session transcripts*, the workspace,
-and scratch — lives on a fixed-size ext4 image (a loop mount inside Docker
-Desktop's WSL distro; no admin rights involved). The rootfs is read-only,
-`/tmp` is RAM (bounded by the memory cap), and `/usr/local` is a read-only
-version-pinned volume so the CLI can't drift. The cap is the filesystem
-itself: at 100% writes fail with ENOSPC — the container is **never stopped**.
-Soft tiers run underneath: at 80% agents are warned, at 90% new turns pause
-(the last 10% is the reserve that keeps session journaling alive) and resume
-automatically under 85%. Disk size comes from the kiosk storage limit, the
-org's `sandbox.limit_mb`, or `ORGTREE_SANDBOX_DISK_MB` (default 20 GB);
-existing volume-layout orgs auto-migrate on their next turn (old volumes are
-kept for rollback). The backend reads the disk directly (`\\wsl.localhost`) —
-including deletes at 100% full — so recovery never depends on the container.
-
-> ☞ **Set Docker Desktop's disk cap.** Org disks are SPARSE: a 20 GB cap costs
-> the host only what's actually written, which keeps generosity free — but it
-> also means N orgs can overcommit the host in aggregate. Each org's own cap
-> is absolute (its ext4 size), while the **aggregate** bound is Docker
-> Desktop → Settings → Resources → *Disk usage limit*. The default is a
-> ~1 TB sparse disk — set it to what you can afford; the backend logs a
-> warning when it's unset. (The WSL2 disk file also does not shrink on its
-> own when content is deleted.)
+**Container storage.** The rootfs is read-only, `/tmp` is RAM (bounded by the
+memory cap), and `/usr/local` is a read-only version-pinned volume so the CLI
+can't drift. System dirs (`/usr`, `/var`, `/etc`, `/opt`, `/root`, `/srv`) are
+per-org named Docker volumes, so `sudo apt install` and config edits persist.
+The agent home, the workspace, and scratch are host bind mounts under the
+data root. There is no per-org storage cap: a sandboxed org can fill the host
+disk, so watch Docker's and the data root's usage yourself.
 
 Sandbox auth is the **proxied subscription** and is not configurable in the
 UI: the container's CLI talks to the bridge's Anthropic passthrough, and the
@@ -586,7 +562,7 @@ hatch: a real API key, or the word `subscription` to copy credentials in.)
 visitors can make agents do anything the fixed rights allow, so give such
 orgs no bash and workspace-only folders. The secret URL is a capability:
 anyone holding it is that kiosk's visitor, so share deliberately and rotate
-freely — and prefer serving it through an HTTPS tunnel (`expose.ps1`) so
+freely — and prefer serving it through an HTTPS tunnel (above) so
 tokens aren't sniffable in transit.
 
 ## A word on safety and cost
@@ -623,14 +599,6 @@ python tools/run_tests.py --full     # everything, including live rigs
 python tools/run_tests.py --list     # what would run, and how, without running it
 ```
 
-In PowerShell, use a fresh temporary directory instead:
-
-```powershell
-$env:ORGTREE_DATA = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
-New-Item -ItemType Directory -Path $env:ORGTREE_DATA | Out-Null
-python tools/run_tests.py
-```
-
 The runner refuses to execute without an explicit `ORGTREE_DATA` (`--list`
 is exempt). Individual storage tests must also establish their own throwaway
 root **before importing orgtree**: the store binds its data root at import
@@ -645,39 +613,32 @@ parallel frontend-test children. It defaults to `4`; lower it when the machine
 is under pressure, or set it to `0` only to restore Node's old unbounded
 parallelism. This is a test-runner setting, not a runtime orgtree setting.
 
-**Frontend test containment (Windows):** the whole `node --test` tree runs
-inside a kernel Job Object (`frontend/tests/joblimit.ps1`) with a job-wide
-commit ceiling, default 6 GB, and a whole-run time limit, default 5 minutes
-(the time limit scales with `--reps`; the ceiling does not). An allocation past the ceiling is refused by the
-kernel and the offending child dies with `Array buffer allocation failed`
-instead of swapping the machine; the time limit terminates every process in
-the job, not just the parent. `ORGTREE_TEST_JOB_MB` overrides the ceiling
-(`0` = no ceiling), `ORGTREE_TEST_RUN_TIMEOUT_MS` the run limit (`0` = none);
-both work through `tools/run_tests.py` as well as a direct `node
-tests/run.mjs` (its child environment strips `ORGTREE_*` but exempts
-`ORGTREE_TEST_*`). A value that is not a whole number is refused rather than
-read as `0`, and a run without the job says so (`[run.mjs] containment OFF`)
-so an uncontained run never looks like a contained one. If the launcher
-cannot create the job on a machine, `ORGTREE_TEST_JOB_MB=0` is the way past
-it. `frontend/tests/containment.test.ts` is the positive control: it proves
-the ceiling kills a planted allocator, that no ceiling lets it finish, and
-that the run limit terminates a sleeper AND its detached child.
+**Frontend test run limit:** `frontend/tests/run.mjs` also bounds the whole `node --test` run's wall time, default 5
+minutes (scales with `--reps`). Past that, the direct `node --test` process is killed with `SIGKILL`; any children it
+spawned and left behind are not covered by this limit. `ORGTREE_TEST_RUN_TIMEOUT_MS` overrides it (`0` = none), and
+works through `tools/run_tests.py` as well as a direct `node tests/run.mjs` (its child environment strips
+`ORGTREE_*` but exempts `ORGTREE_TEST_*`). A value that is not a whole number is refused rather than read as `0`.
 
-**The two tiers.** The fast tier runs every suite in the cheapest mode that
-suite advertises — `--hermetic` if it has one, else `--quick`, else plain — and
-touches no real listener that matters. It is what CI runs. The full tier runs
-everything at full depth, including the live rigs that spawn a real uvicorn, a
-real turn loop and a fake Claude CLI, and sweep timing configurations in real
-elapsed time. Those are minutes each, so they are a pre-release gate rather
-than a per-change one.
+**The two tiers.** The fast tier runs every suite in the cheapest mode that suite advertises — `--hermetic` if it has
+one, else `--quick`, else plain — and touches no real listener that matters. It runs on every push. The full tier runs
+everything at full depth, including the live rigs that spawn a real uvicorn, a real turn loop and a fake Claude CLI,
+and sweep timing configurations in real elapsed time. Those are minutes each, so the full tier is a nightly and
+pre-release gate rather than a per-change one. Neither tier bills a model: every provider CLI is a fake. The one
+opt-in mode that needs a paid model, `test_message_visibility_live.py --real-cli`, is run by hand only.
 
-**How suites are found.** By glob — `backend/tests/test_*.py` plus
-`frontend/tests/run.mjs`. Adding a suite requires no edit to the runner: its
-flags, whether it starts a real listener (those run one at a time, after the
-parallel pool drains, so nothing races them), whether it asserts Windows-only
-filesystem behaviour, and whether it carries a drift guard are all read out of
-the suite's own source. The one table of literals in `run_tests.py` is `SLOW`,
-which records *measured* wall times that keep a suite out of the fast tier.
+**Hermetic home.** The runner gives every suite a throwaway `HOME` and puts stub `claude` and `codex` executables
+first on `PATH`. The fake home holds a fixture Claude account (`~/.claude.json`) and a fake Codex API key
+(`~/.codex/auth.json`), with no real credentials. The stubs answer `--version` and fail loudly on any other call. Every
+machine therefore looks the same to the provider hire gates, signed-in dev box and bare CI runner alike, and no suite
+can reach your real CLI login. `ORGTREE_TEST_REAL_HOME` carries the real home so the live-data-root guards still refuse
+your real `~/orgtree`. Running a suite directly (`python backend/tests/test_x.py`) skips all of this and uses your real
+`HOME`.
+
+**How suites are found.** By glob — `backend/tests/test_*.py` plus `frontend/tests/run.mjs`. Adding a suite requires
+no edit to the runner: its flags, whether it starts a real listener (those run one at a time, after the parallel pool
+drains, so nothing races them), and whether it carries a drift guard are all read out of the suite's own source. The
+one table of literals in `run_tests.py` is `SLOW`, which records *measured* wall times that keep a suite out of the
+fast tier.
 
 **Drift guards.** Several suites mirror expressions that live in production
 files and check that the original still says what the mirror assumes:
@@ -692,16 +653,9 @@ of that model has quietly become fiction until the mirror is updated. The
 summary also reports guards that ran and *held*, and flags a guard that
 printed no verdict at all.
 
-**CI** (`.github/workflows/tests.yml`) runs the fast tier on every push, on
-`windows-latest` **and** `ubuntu-latest`. Windows is the authoritative job:
-orgtree runs on Windows, and `test_persistence.py` asserts Windows filesystem
-semantics directly (`os.replace` over an open destination raises WinError 5;
-`FILE_SHARE_DELETE` does not rescue it) — the writer-preferring latch exists
-*because* of them. On Linux those calls simply succeed, so the runner skips
-that suite there and prints the reason in the summary rather than pretending
-it passed. The Linux job is advisory until it has come back green once —
-nothing in this tree has ever been observed running on Linux, and a blocking
-job that has never passed is a job people turn off.
+**CI** runs on `ubuntu-latest`. `.github/workflows/tests.yml` runs the fast tier on every push and pull request; the
+job is blocking, so a failing suite fails the build. `.github/workflows/full-tests.yml` runs the full tier nightly and
+on demand (`workflow_dispatch`).
 
 The ledger (`backend/orgtree/ledger.py`) is the single source of truth for
 credits, authority, addressing, and capability subsets; the supervisor

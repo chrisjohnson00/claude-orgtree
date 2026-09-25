@@ -112,30 +112,26 @@ still on JSON is migrated **automatically the moment it updates** — no prompt,
 no flag, and nothing for the operator to know or type:
 
 ```
-powershell -ExecutionPolicy Bypass -File update.ps1     # Windows
-./update.sh                                             # Linux / macOS
+./update.sh
 ```
 
 That is the whole procedure. Everything below this section is the record of
-what those scripts do on your behalf, and what to do at a real console when
+what the script does on your behalf, and what to do at a real console when
 something has already gone wrong.
 
 **The defect this closes.** `main` defaults to `ORGTREE_STORE=sqlite`. Before
 2026-09-04 an install still on JSON that pulled `main` got a backend that
-refused to start (`MigrationRefused`) against its own data root — and if it had
-the autostart tasks registered, `orgtree-ensure` relaunched that refusing build
-every five minutes forever. A routine `git pull` became a permanent outage.
+refused to start (`MigrationRefused`) against its own data root. A routine
+`git pull` became an outage.
 
-**How the automatic upgrade is wired**, per platform, because they differ:
+**How the automatic upgrade is wired:**
 
-| | Windows | Linux / macOS |
-|---|---|---|
-| detects | `update.ps1` §1c | `update.sh` §1c |
-| when | after the `git pull`, before the UI build, long before the stop | the same |
-| how | hands the whole sequence to `tools/cutover_deploy.py`, detached | runs `tools/cutover.py` inline, between its own stop and start |
-| mutex + prove-stopped | yes (`Global\orgtree-update`, owner-lock probe) | no — see below |
-| automatic rollback | yes, the wrapper's drilled ladder | **no** — it prints the command |
-| 5-minute watchdog | `-EnsureUp` brings a JSON root back up **on JSON** and writes `UPGRADE-PENDING.txt` into the data root | no watchdog exists on POSIX |
+| | `update.sh` |
+|---|---|
+| detects | §1c |
+| when | after the `git pull`, before the UI build, long before the stop |
+| how | runs `tools/cutover.py` inline, between its own stop and start |
+| automatic rollback | **no** — it prints the command |
 
 ⚠ **Why the detection is after the pull and not at the top of the script.** The
 question being asked is about *the code this run is about to deploy*. An install
@@ -146,14 +142,9 @@ important that it is **before the stop**: an install that decides here has not
 been stopped and is still serving; one that discovers the problem after the stop
 is down.
 
-⚠ **POSIX is not the same path and this document does not pretend otherwise.**
-`tools/cutover_deploy.{py,ps1}` is Windows-only. `update.sh` gets the same
-*outcome* by driving the same portable tool (`tools/cutover.py`) in the window
-it already opens between stopping the backend and starting it, but it has no
-machine-wide mutex, does not prove the stop by taking the data root's owner
-lock, and **never rolls back automatically** — it stops and prints the rollback
-command instead, because a rollback rewrites org authority from an export and
-that is not a thing a second, undrilled implementation should decide to do.
+⚠ **`update.sh` never rolls back automatically.** It stops and prints the
+rollback command instead, because a rollback rewrites org authority from an
+export and that is not a thing an unattended script should decide to do.
 
 **What it never does.** The deployed backend still never receives
 `ORGTREE_MIGRATE=1`. What the 2026-09-04 ruling changed is only *who supplies
@@ -179,8 +170,7 @@ databases are **not** a rollback: they predate every write since the migration.
 
 **Opting out.** `ORGTREE_NO_AUTOCUTOVER=1` skips the automatic upgrade; you
 then also need `ORGTREE_STORE=json` or the backend refuses the root it is
-pointed at. This is also how `tools/cutover_deploy.ps1` stops the `update.ps1`
-it runs at its own step 5 from handing back to it.
+pointed at.
 
 ## ⚠ If you are running *inside* orgtree, do not follow the steps by hand
 
@@ -189,23 +179,14 @@ that backend. Typed into an agent's own shell, step 1 kills the shell and steps
 2–5 never happen: the root is left mid-flight with nobody watching, and the
 thing that would have brought it back is the process that just died.
 
-Use the detached wrapper instead. It performs this whole runbook — including
-both recoveries below — from a process with no parent to lose:
+Use the `orgtree_self_restart` tool instead. It runs `update.sh` detached, from
+a process with no parent to lose, and `update.sh` performs the migration in the
+window between its stop and its start. Read the deploy log afterwards — it is
+the only record.
 
-```
-python tools\cutover_deploy.py C:\Users\<you>\orgtree
-```
-
-It prints a log path and returns in about two seconds; everything after that
-happens without it. Read the log afterwards — it is the only record.
-
-Two things it does that hand-running does not, and that are easy to forget:
-
-* it holds `Global\orgtree-update` for the whole migration, so the **5-minute
-  `orgtree-ensure` task cannot relaunch a backend into the middle of it**;
-* it pins `ORGTREE_STORE=json` when it has to bring a backend back up on a root
-  it did *not* migrate. The checkout on disk now defaults to SQLite, so "just
-  start it again" no longer means "start the backend that was running".
+⚠ The checkout on disk defaults to SQLite, so after a failed migration "just
+start it again" does not mean "start the backend that was running": bring a root
+that was *not* migrated back up with `ORGTREE_STORE=json`.
 
 The steps below remain the record of what actually happens, and are what to
 follow when the backend is already down and you are at a real console.
@@ -219,14 +200,13 @@ someone eventually skips.
 
 > ⚠ **Amended 2026-09-04 by user ruling.** This paragraph used to continue
 > "…and it is an *operator* action, never automatic". That is no longer true of
-> the upgrade path: `update.ps1` / `update.sh` now supply the authorisation
-> themselves when they find an unmigrated JSON root, because the ruling is that
+> the upgrade path: `update.sh` now supplies the authorisation
+> itself when they find an unmigrated JSON root, because the ruling is that
 > an existing install must be migrated with no friction the moment it updates.
 >
 > **The rest of the rule is unchanged, and is load-bearing.** The flag still
 > lives only in the environment of the one child that runs `cutover.py migrate`
-> — a one-shot `.cmd` file on Windows, a command prefix on POSIX — and that
-> child exits. No process that goes on to *start a backend* has ever held it.
+> — a command prefix in `update.sh` — and that child exits. No process that goes on to *start a backend* has ever held it.
 > A backend that could convert a data root as a side effect of being pointed at
 > one is the 2026-09-03 incident, and that is still forbidden. What changed is
 > who types the authorisation, not where it lives or how long it lasts.
@@ -240,21 +220,13 @@ someone eventually skips.
 
 2. **Migrate, with the flag in that one command's environment only.**
 
-   **Windows** (this install — PowerShell or cmd):
-
-   ```
-   cmd /c "set ORGTREE_MIGRATE=1&& python tools\cutover.py migrate <root>"
-   ```
-
-   **POSIX:**
-
    ```
    ORGTREE_MIGRATE=1 python tools/cutover.py migrate <root>
    ```
 
-   Both forms put the variable in the **child's** environment, where it dies
-   with the process. ⚠ Do **not** use `$env:ORGTREE_MIGRATE = "1"` in a shell
-   you keep using and then clean it up afterwards — a variable that must be
+   This puts the variable in the **child's** environment, where it dies with
+   the process. ⚠ Do **not** `export ORGTREE_MIGRATE=1` in a shell you keep
+   using and then clean it up afterwards — a variable that must be
    removed later is a step someone eventually skips, which is the whole reason
    the deployed backend never receives this flag at all.
 
@@ -363,9 +335,9 @@ than only on ones lacking a `.json`.
 is one active format per root, not per org, so you cannot roll back one org
 and leave the rest.
 
-⚠ The pooled connection from the export step holds each database open, and
-Windows will not move a file anything holds. `cutover.py` checkpoints and
-closes first; hand-rolling this is how you get a half-parked root. Measured —
+⚠ The pooled connection from the export step holds each database open.
+`cutover.py` checkpoints and closes first; hand-rolling this is how you get a
+half-parked root. Measured —
 an early version of the tool died exactly there.
 
 ⚠ **This document used to promise that the move was all-or-nothing. It was
@@ -403,8 +375,7 @@ databases **from their already-installed current exports**, restoring
 whole-root SQLite authority, after which the rollback completes normally:
 
 ```
-Windows  cmd /c "set ORGTREE_MIGRATE=1&& python tools\cutover.py rollback <root>"
-POSIX    ORGTREE_MIGRATE=1 python tools/cutover.py rollback <root>
+ORGTREE_MIGRATE=1 python tools/cutover.py rollback <root>
 ```
 
 The tool prints exactly that command, with the list of which slugs are parked

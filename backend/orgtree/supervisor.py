@@ -42,7 +42,7 @@ from functools import wraps
 from typing import Any, Final, Protocol, cast
 
 from . import (accounts, appsettings, cachecontinuity, clipin, codex_limits, events,
-               codex_route, deployment, envelope, failfix, handoff, imgblock,
+               codex_route, envelope, failfix, handoff, imgblock,
                limits, localtime, net, openrouter, opreceipts, providers,
                sandbox as sbx, store,
                tokens, turnlog, turnusage, warmpool)
@@ -62,16 +62,6 @@ def kiosk_cfg(org: Org) -> KioskCfg | None:
     return org.d.get("kiosk") or None
 
 
-def _deployment_org_gate(org: Org) -> None:
-    """Refuse every agent execution path that cannot prove sandboxing."""
-    if deployment.current_policy().require_sandboxed_orgs \
-            and not sbx.is_sandboxed(org):
-        raise RuntimeError(
-            "the frozen deployment profile refuses to run an unsandboxed "
-            f"org ({org.d.get('slug') or '<unknown>'}); recreate the org with "
-            "sandbox enabled before enabling frozen mode")
-
-
 _ws_usage_cache: dict[str, tuple[float, int]] = {}
 
 
@@ -87,16 +77,6 @@ def workspace_usage_bytes(org: Org, max_age: float = 0.0) -> int:
         hit = _ws_usage_cache.get(slug)
         if hit and time.time() - hit[0] < max_age:
             return hit[1]
-    # a disk-migrated org's entire footprint is its disk: df INSIDE the
-    # distro is exact and instant — never 9p-walk 99k files over UNC
-    if sbx.is_sandboxed(org) and sbx.on_disk(slug):
-        from . import disk as dsk
-        du = dsk.usage(slug, max_age=max(max_age, 5.0))
-        if du is not None:
-            _ws_usage_cache[slug] = (time.time(), du[0])
-            return du[0]
-        hit = _ws_usage_cache.get(slug)
-        return hit[1] if hit else 0
     total = 0
     ws = org.d.get("workspace")
     roots = [p for p in (ws, store.scratch_root(slug))
@@ -167,7 +147,7 @@ def workspace_usage_cached(org: Org, max_age: float = 15.0) -> int | None:
     total = hit[1]
     return total
 
-COMPACT_AT = float(os.environ.get("ORGTREE_COMPACT_AT", "0.80"))   # §8.2
+COMPACT_AT = float(os.environ.get("ORGTREE_COMPACT_AT", "0.50"))   # §8.2
 ORACLE_AT = float(os.environ.get("ORGTREE_ORACLE_AT", "0.92"))     # §8.3 state 2→3
 
 # A reported-working agent is declaring a bounded pause between turns rather
@@ -294,31 +274,19 @@ BACKEND_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 # enough global install).
 _DATA = os.path.expanduser(os.environ.get("ORGTREE_DATA", "~/orgtree"))
 _PIN = os.path.join(_DATA, "cli", "node_modules", "@anthropic-ai",
-                    "claude-code", "bin", "claude.exe" if os.name == "nt"
-                    else "claude")
+                    "claude-code", "bin", "claude")
 CLAUDE = (os.environ.get("ORGTREE_CLAUDE")
           or (_PIN if os.path.exists(_PIN) else None)
           or shutil.which("claude") or "claude")
-# ⚠️ On Windows, never launch through the .CMD shim via `cmd /c`: cmd truncates
-# argv at an embedded newline, and the identity prompt is multiline (org
-# charts). Invoking node + cli.js directly passes newlines through
-# CreateProcess intact. The .CMD shim is a last resort.
-#
-# ⚠️ DO NOT "REPAIR" THIS DERIVATION — it is layout-dependent ON PURPOSE, and
-# it already resolves correctly for BOTH layouts we ship against (measured
-# 2026-08-21). It looks broken for the pin and is not:
-#   · the PIN is `<data>/cli/node_modules/@anthropic-ai/claude-code/bin/
-#     claude.exe`, so this derives `…/bin/node_modules/…/cli.js`, which does
-#     NOT exist — and must not, because that package has NO cli.js ANYWHERE.
-#     Modern claude-code ships a NATIVE BINARY plus a wrapper. `_claude_argv`
-#     therefore falls through to the .exe, which is the CORRECT entry point:
-#     it passes argv through CreateProcess intact exactly as node would.
-#     Pointing this at the package root would find nothing and change nothing.
-#   · an npm GLOBAL install is `…/npm/claude.CMD` with `…/npm/node_modules/
-#     @anthropic-ai/claude-code/cli.js` beside it — that DOES exist, so the
-#     node path wins and the .CMD is never reached.
-# So `cmd /c` is reachable only from a .CMD with no sibling cli.js. The
-# multiline-truncation hazard is real but is NOT on either measured path.
+# ⚠️ DO NOT "REPAIR" THIS DERIVATION — it is layout-dependent ON PURPOSE. It
+# looks broken for the pin and is not: the PIN is `<data>/cli/node_modules/
+# @anthropic-ai/claude-code/bin/claude`, so this derives
+# `…/bin/node_modules/…/cli.js`, which does NOT exist — and must not, because
+# modern claude-code ships a NATIVE BINARY with no cli.js anywhere.
+# `_claude_argv` therefore falls through to the binary, which is the correct
+# entry point. Pointing this at the package root would find nothing and change
+# nothing. The node + cli.js leg only serves an install that keeps cli.js
+# beside the resolved `claude`, or an ORGTREE_CLAUDE_CLI override.
 CLAUDE_CLI_JS = os.environ.get("ORGTREE_CLAUDE_CLI", os.path.join(
     os.path.dirname(CLAUDE), "node_modules", "@anthropic-ai", "claude-code", "cli.js"))
 
@@ -428,9 +396,7 @@ def cli_version() -> str:
     ver = "unknown"
     try:
         r = subprocess.run(_claude_argv() + ["--version"],
-                           capture_output=True, text=True, timeout=30,
-                           creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                                          if os.name == "nt" else 0))
+                           capture_output=True, text=True, timeout=30)
         m = re.search(r"\d+\.\d+\.\d+", r.stdout or "")
         if m:
             ver = m.group(0)
@@ -457,9 +423,7 @@ def build_info() -> dict[str, Any]:
         try:
             r = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
                                 cwd=sbx.REPO_ROOT, capture_output=True,
-                                text=True, timeout=10,
-                                creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                                               if os.name == "nt" else 0))
+                                text=True, timeout=10)
             if r.returncode == 0:
                 commit = r.stdout.strip() or "unknown"
             # the BRANCH too (FR-15 preview deploys): a branch deploy was
@@ -469,9 +433,7 @@ def build_info() -> dict[str, Any]:
             # says something the SHA does not.
             b = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
                                cwd=sbx.REPO_ROOT, capture_output=True,
-                               text=True, timeout=10,
-                               creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                                              if os.name == "nt" else 0))
+                               text=True, timeout=10)
             if b.returncode == 0:
                 name = b.stdout.strip()
                 if name and name not in ("HEAD", "main"):
@@ -489,8 +451,6 @@ def build_info() -> dict[str, Any]:
 def _claude_argv() -> list[str]:
     if os.path.exists(CLAUDE_CLI_JS):
         return ["node", CLAUDE_CLI_JS]
-    if os.name == "nt" and CLAUDE.lower().endswith((".cmd", ".bat")):
-        return ["cmd", "/c", CLAUDE]
     return [CLAUDE]
 
 
@@ -1117,69 +1077,18 @@ _state_lock = threading.Lock()
 
 
 # ---------------------------------------------------------- child-process leash
-# Gap audit №29: nothing killed the CLI children when the backend died — and
-# update.ps1 force-kills the backend by design. Orphaned CLIs kept appending to
-# their transcripts while a restarted backend ALSO resumed the same session ids:
-# two writers, one transcript. On Windows a job object with KILL_ON_JOB_CLOSE
-# makes the OS reap every child the instant the backend process goes away, no
-# matter how it went away; elsewhere an atexit sweep covers graceful exits.
-_JOB: int | None = None                      # Windows job-object handle
+# Gap audit №29: nothing killed the CLI children when the backend died.
+# Orphaned CLIs kept appending to their transcripts while a restarted backend
+# ALSO resumed the same session ids: two writers, one transcript. An atexit
+# sweep kills every leashed child on a graceful exit; a hard kill of the
+# backend (SIGKILL) skips it.
 _ORPHANS: set[subprocess.Popen[str]] = set()
-
-
-def _job_handle() -> int | None:
-    global _JOB
-    if os.name != "nt":
-        return None
-    if _JOB is not None:
-        return _JOB
-    import ctypes
-    k32 = ctypes.windll.kernel32
-
-    class _BASIC(ctypes.Structure):
-        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
-                    ("PerJobUserTimeLimit", ctypes.c_int64),
-                    ("LimitFlags", ctypes.c_uint32),
-                    ("MinimumWorkingSetSize", ctypes.c_size_t),
-                    ("MaximumWorkingSetSize", ctypes.c_size_t),
-                    ("ActiveProcessLimit", ctypes.c_uint32),
-                    ("Affinity", ctypes.c_size_t),
-                    ("PriorityClass", ctypes.c_uint32),
-                    ("SchedulingClass", ctypes.c_uint32)]
-
-    class _IO(ctypes.Structure):
-        _fields_ = [(f, ctypes.c_uint64) for f in (
-            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
-
-    class _EXT(ctypes.Structure):
-        _fields_ = [("BasicLimitInformation", _BASIC), ("IoInfo", _IO),
-                    ("ProcessMemoryLimit", ctypes.c_size_t),
-                    ("JobMemoryLimit", ctypes.c_size_t),
-                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
-
-    h = k32.CreateJobObjectW(None, None)
-    if h:
-        info = _EXT()
-        info.BasicLimitInformation.LimitFlags = 0x2000   # KILL_ON_JOB_CLOSE
-        k32.SetInformationJobObject(h, 9, ctypes.byref(info), ctypes.sizeof(info))
-    _JOB = h or None
-    return _JOB
 
 
 def _leash(proc: subprocess.Popen[str]) -> None:
     """Tie a spawned CLI child's lifetime to the backend's."""
     try:
-        if os.name == "nt":
-            h = _job_handle()
-            if h:
-                import ctypes
-                ctypes.windll.kernel32.AssignProcessToJobObject(
-                    # Popen's win32-only private process handle (not in typeshed)
-                    h, int(proc._handle))   # pyright: ignore[reportAttributeAccessIssue]
-        else:
-            _ORPHANS.add(proc)
+        _ORPHANS.add(proc)
     except Exception:                                        # noqa: BLE001
         pass
 
@@ -2833,17 +2742,11 @@ def working_count(slug: str) -> int:
 def scratch_dir(slug: str, nid: str) -> str:
     # lineage nodes ("name@gen") share their successor's scratch — they are the same
     # self at different times, and the CLAUDE.md self-notes belong to that self.
-    # A disk-migrated org's scratch lives ON the disk (UNC view for the backend).
-    if sbx.on_disk(slug):
-        from . import disk as dsk
-        base = dsk.windows_sub(slug, "scratch")
-    else:
-        base = store.scratch_root(slug)
-    p = os.path.join(base, nid.split("@")[0])
+    p = os.path.join(store.scratch_root(slug), nid.split("@")[0])
     if not os.path.isdir(p):
         os.makedirs(p, exist_ok=True)
-        # backend-minted = root-owned inside a sandbox (UNC writes arrive as
-        # root; the CLI runs as agent) — hand a NEW node dir over immediately,
+        # backend-minted = owned by the backend's uid, not the container's
+        # agent (the CLI runs as agent) — hand a NEW node dir over immediately,
         # or its first turn cannot write its own cwd (live bug 2026-08-04)
         try:
             org = store.load_org(slug)
@@ -3385,11 +3288,7 @@ def rename_node(slug: str, nid: str, new_name: str,
         # ---- filesystem, before save: scratch dir + CLI project dir ----
         moved: list[tuple[str, str]] = []
         try:
-            if sbx.on_disk(slug):
-                from . import disk as dsk
-                base = dsk.windows_sub(slug, "scratch")
-            else:
-                base = store.scratch_root(slug)
+            base = store.scratch_root(slug)
             old_dir, new_dir = (os.path.join(base, nid),
                                 os.path.join(base, new))
             # the CLI project dir rides the CWD — container path for sandboxed
@@ -5055,8 +4954,8 @@ def sandbox_mcp_passthrough(granted: list[str],
     """The granted servers a SANDBOXED turn may receive. Empty unless
     ORGTREE_SANDBOX_MCP is set; then: URL servers with localhost rewritten to
     the container's host alias, and stdio servers whose command is portable
-    enough to attempt in-container (npx/node/python/uv — Windows `cmd /c`
-    wrappers stripped). Experimental — no guarantee a given server runs."""
+    enough to attempt in-container (npx/node/python/uv). Experimental — no
+    guarantee a given server runs."""
     if not sandbox_mcp_enabled():
         return {}
     out = {}
@@ -5072,12 +4971,7 @@ def sandbox_mcp_passthrough(granted: list[str],
             continue
         cmd = srv.get("command", "") or ""
         args = list(srv.get("args") or [])
-        if os.path.basename(cmd).lower() in ("cmd", "cmd.exe") \
-                and args[:1] == ["/c"] and len(args) > 1:
-            cmd, args = args[1], args[2:]
         base = os.path.basename(cmd).lower()
-        for suf in (".exe", ".cmd", ".bat"):
-            base = base.removesuffix(suf)
         if base in _PORTABLE_CMDS:
             out[k] = {**srv, "command": "python3" if base.startswith("python") else base,
                       "args": args}
@@ -5976,8 +5870,7 @@ def _org_state_parts(org: Org, nid: str,
             f"next message that you did and why. If it does still stand, "
             f"leave it alone — do not re-ask, that only replaces it.")
     live_guidance = _claudemd_caveat(org, nid).strip()
-    if deployment.current_policy().allow_agent_restart \
-            and n["parent"] is not None and org._has_audience(nid, USER):
+    if n["parent"] is not None and org._has_audience(nid, USER):
         # The full unprompted-deploy doctrine remains in a top-level agent's
         # stable identity. A deep audience holder gains the same authority
         # dynamically, so state that trigger here without putting the live
@@ -6130,7 +6023,7 @@ def _state_segments(org: Org, nid: str, state_text: str, facts: Mapping[str, Any
         free = 0.0
     snapshot = {
         "seq": facts.get("seq"), "at": now_iso(),
-        "reports": [{"id": k, "name": str(org.nodes[k].get("name") or k),
+        "reports": [{"id": k, "name": str(org.nodes[k].get("title") or k),
                      "tier": str(org.nodes[k].get("model") or ""),
                      "state": str(org.nodes[k].get("state") or "")} for k in kids],
         "peers": list(sibs),
@@ -6887,8 +6780,7 @@ def identity_prompt(org: Org, nid: str, include_archived: bool = False) -> str:
            "instead of planning to retry later — see both tool cards for the "
            "mechanics (detached spawn, refusal/naming, arming, liveness "
            "check, reason requirement). "
-           if deployment.current_policy().allow_agent_restart
-           and n["parent"] is None
+           if n["parent"] is None
            else "")
         + f"AUTHENTIC-CHANNEL NOTE: "
         f"the orgtree harness may deliver real mail mid-task — from the user or "
@@ -6991,7 +6883,7 @@ def _node_ref(org: Org, nid: str) -> dict[str, Any]:
     """The canonical NodeRef of a node as the producers mint it (design §2)."""
     n = org.nodes.get(nid) or {}
     return {"kind": "node", "org": str(org.d.get("slug") or ""), "id": nid,
-            "name": str(n.get("name") or nid), "generation": int(n.get("generation") or 0)}
+            "name": str(n.get("title") or nid), "generation": int(n.get("generation") or 0)}
 
 
 #: the engine's own hand as an event actor (design I3)
@@ -7856,14 +7748,7 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
     # runs inside the org's container; paths below become container paths and
     # the orgtree tools reach the host only via the secret-gated bridge
     sandboxed = sbx.is_sandboxed(org)
-    # Compute once so the CLI proxy, MCP child and steering hook all carry the
-    # same org credential generation. Frozen mode rotates this host-rooted
-    # bearer; standard mode keeps the existing org secret for migration.
-    # This is deliberately NOT node isolation: sandbox siblings share one
-    # root-capable container and are mutually trusted at this boundary.
-    bridge_credential = sbx.bridge_credential(org) if sandboxed else ""
-    frozen_bridge = (sandboxed
-                     and not sbx.legacy_bridge_credentials_allowed())
+    bridge_secret = sbx.sandbox_secret(org) if sandboxed else ""
     # isolation by default: the user's global hooks must not leak into agents.
     # The PostToolUse steering hook (mid-task mail delivery, 3f42476) needs a
     # CLI that fires TOOL hooks headless — <= 2.1.31 does not (live-tested).
@@ -7903,8 +7788,7 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
         # bearer's hook used to resolve as its successor and eat its mail
         settings: dict = _steer_settings(
             "python3 /opt/orgtree-backend/orgtree/steer.py "
-            f'"{slug}" "{nid}"'
-            + (f' "{bridge_credential}"' if frozen_bridge else ""))
+            f'"{slug}" "{nid}"')
     elif steer_capable and os.environ.get("ORGTREE_STEER_HOOK") != "0":
         steer_py = os.path.join(BACKEND_DIR, "orgtree", "steer.py")
         settings = _steer_settings(
@@ -8019,8 +7903,7 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
         if deny:
             settings["permissions"] = {"deny": deny}
     head = ((sbx.exec_argv(sbx.container_name(slug),
-                           sbx.cpath_scratch(slug, nid),
-                           sbx.bridge_exec_env(org)) + ["claude"])
+                           sbx.cpath_scratch(slug, nid)) + ["claude"])
             if sandboxed else _claude_argv())
     # №29 still holds — the identity prompt regenerates every turn — but it
     # rides a FILE now, not argv (user order 2026-08-17). Windows CreateProcess
@@ -8111,9 +7994,7 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
             "args": ["/opt/orgtree-backend/orgtree/mcptool.py"],
             "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
                     "ORGTREE_BASE": sbx.bridge_url(),
-                    "ORGTREE_BRIDGE_SECRET": bridge_credential,
-                    deployment.PROFILE_ENV:
-                        deployment.current_policy().name},
+                    "ORGTREE_BRIDGE_SECRET": bridge_secret},
         }
     else:
         chosen = dict(grant)
@@ -8122,9 +8003,7 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
             "args": ["-m", "orgtree.mcptool"],
             "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
                     "ORGTREE_PORT": os.environ.get("ORGTREE_PORT", "7360"),
-                    "PYTHONPATH": BACKEND_DIR,
-                    deployment.PROFILE_ENV:
-                        deployment.current_policy().name},
+                    "PYTHONPATH": BACKEND_DIR},
         }
     # Do not force `alwaysLoad` here. In CLI 2.1.220 it blocks construction of
     # the first request until each MCP server connects (up to its timeout).
@@ -8216,10 +8095,9 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
     # retire). Held and abandoned at commit 2e0eb47. LENGTH IS NOT THE COST;
     # STABILITY IS. Do not re-derive it.
     # ⚠ DERIVED FROM `scratch_dir`, NOT REBUILT FROM `store.scratch_root`. A
-    # DISK-MIGRATED org keeps its scratch on the disk (`dsk.windows_sub`), so a
-    # root composed from the data root would name a directory the agents' own
-    # folders are not under — granting a real path that covers nothing, which
-    # fails silently as "the file tools stopped reaching my reports". Taking the
+    # root composed separately can drift from where the agents' own folders
+    # actually live — granting a real path that covers nothing, which fails
+    # silently as "the file tools stopped reaching my reports". Taking the
     # parent of the same function that mints the per-node dirs cannot drift.
     root = (os.path.dirname(sbx.cpath_scratch(slug, nid)) if sandboxed
             else os.path.dirname(scratch_dir(org.d["slug"], nid)))
@@ -8264,13 +8142,6 @@ def _build_cmd(org: Org, nid: str, write_ident: bool = True) -> list[str]:
     else:
         cmd += ["--session-id", sid] if first else ["--resume", sid]
     return cmd
-
-
-# D-218: Windows CreateProcess refuses command lines over 32,767 chars with
-# [WinError 206] — a "filename" error that names neither the flag nor the
-# culprit. Warn with headroom; refuse in writing just under the OS wall.
-_ARGV_WARN_CHARS: Final = 30_000
-_ARGV_HARD_CAP_CHARS: Final = 32_500
 
 
 def spawn_argv(org: Org, nid: str, cmd: list[str],
@@ -8323,30 +8194,7 @@ def spawn_argv(org: Org, nid: str, cmd: list[str],
     os.replace(tmp, path)              # atomic on one volume; last writer wins
     out = list(cmd)
     out[i + 1] = path
-    _argv_length_guard(out, org.d["slug"], nid)
     return out
-
-
-def _argv_length_guard(cmd: list[str], slug: str, nid: str) -> None:
-    """Fail in writing what Windows would fail in riddles. With settings
-    parked in a file the 32,767-char cap should be unreachable; if a future
-    rider grows past it anyway, raise a named error here so the turn books a
-    readable failure instead of [WinError 206], and warn one step early so
-    the log shows the trend before the wall."""
-    if os.name != "nt":
-        return
-    total = len(subprocess.list2cmdline(cmd))
-    if total <= _ARGV_WARN_CHARS:
-        return
-    biggest = max(cmd, key=len)
-    culprit = f"largest element {len(biggest)} chars: {biggest[:120]}…"
-    if total > _ARGV_HARD_CAP_CHARS:
-        raise RuntimeError(
-            f"turn failed: the spawn command line for {slug}/{nid} is "
-            f"{total:,} chars — over Windows' 32,767-char CreateProcess cap "
-            f"even with settings parked in a file. {culprit}")
-    print(f"[orgtree] spawn argv for {slug}/{nid} is {total:,} chars — "
-          f"nearing Windows' 32,767-char cap; {culprit}")
 
 
 def _foreign_session_provider(n: NodeDoc) -> str | None:
@@ -9557,17 +9405,9 @@ def _auto_wake_gates_clear(org: Org, nid: str) -> bool:
         return False
     if org.d.get("spend_frozen"):
         return False
-    # Match the real turn's disk-org admission gate. Host-folder orgs use the
-    # watchdog's ACL barrier instead and are not turn-blocked by this flag.
-    if org.d.get("storage_blocked") and sbx.on_disk(org.d["slug"]):
-        return False
     if org.waking_mail(nid):
         return False
     if (org.d.get("delivering") or {}).get(nid):
-        return False
-    try:
-        _deployment_org_gate(org)
-    except RuntimeError:
         return False
     return True
 
@@ -10035,9 +9875,7 @@ def _working_cache_read(slug: str, nid: str,
                 proc = subprocess.Popen(
                     cmd, cwd=cwd, env=env, stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                    encoding="utf-8", errors="replace",
-                    creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                                   if os.name == "nt" else 0))
+                    encoding="utf-8", errors="replace")
                 if lease is not None:
                     lease["proc"] = proc
             _leash(proc)
@@ -11214,7 +11052,10 @@ def _codex_git_trust_env(sc: Mapping[str, Any]) -> dict[str, str]:
         # forward slashes: what git itself prints in its own "To add an
         # exception" hint on Windows, and what was measured to work
         g = p.replace("\\", "/")
-        if g.endswith("/") and not g.endswith(":/"):
+        # "/" itself must not strip down to "": an EMPTY safe.directory value
+        # is git's own convention for "reset the list" — it would silently
+        # wipe every entry built above it (measured with a root grant).
+        if g.endswith("/") and not g.endswith(":/") and g != "/":
             g = g[:-1]
         # the descendants pattern is built separately rather than by
         # appending "/*": a DRIVE-ROOT grant ("C:\") already ends in its
@@ -12853,8 +12694,9 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
             target=_steer_pump, daemon=True,
             name=f"codexsteer-{slug}-{nid}")
         steer_thread.start()
-        res_raw = turn.wait(timeout=TURN_TIMEOUT,
-                            close_client=wp_turn is None)
+        # Closing happens below, after the steer pump has actually left
+        # (join) — closing here would race its last poll for a late reply.
+        res_raw = turn.wait(timeout=TURN_TIMEOUT, close_client=False)
     finally:
         # Leg-local cleanup only; `_run_one_turn` still owns the shared queue
         # and busy-state boundary. A clean warm claimant detaches its callbacks
@@ -12967,8 +12809,11 @@ def _codex_leg_attempt(slug: str, nid: str, org: Org, st: dict[str, Any],
                     _td_discard = reason
                     warmpool.discard(wp_turn, reason)
             else:
-                # `wait` normally closed the cold client; this also covers a
-                # start/initialize exception before wait was reached.
+                # Only reached after `steer_thread.join()` above, so this can
+                # no longer race the pump's last poll for a late reply (the
+                # bug `close_client=False` on `wait()` exists to fix) — and
+                # still inside the `finally` this whole block already is, so
+                # a raise here does not skip the teardown below (D2).
                 turn.client.close()
         finally:
             # ⚠ ON EVERY EXIT: the teardown above is the same "can each raise"
@@ -13345,8 +13190,7 @@ def _antigravity_leg(slug: str, nid: str, org: Org, st: dict[str, Any],
         # ORGTREE_NODE reached the server), so partial specs would
         # identity-confuse mcptool
         "env": {"ORGTREE_ORG": slug, "ORGTREE_NODE": nid,
-                "ORGTREE_PORT": port, "PYTHONPATH": BACKEND_DIR,
-                deployment.PROFILE_ENV: deployment.current_policy().name},
+                "ORGTREE_PORT": port, "PYTHONPATH": BACKEND_DIR},
     }
     # the ⚙-rights seam: every turn runs with the CLI's own prompts
     # switched off (headless print mode cannot answer them — it auto-denies
@@ -14353,19 +14197,11 @@ def _run_one_turn_recorded(slug: str, nid: str,
                       f"machine-wide cap being contended, not this node")
             with store.DOC_LOCK:
                 org = store.load_org(slug)
-                _deployment_org_gate(org)
                 if org.node(nid)["state"] != "live":
                     raise RuntimeError(f"{nid} is not live")
                 if org.d.get("spend_frozen"):
                     raise RuntimeError("kiosk spend limit reached — frozen "
                                        "until the limit is raised (admin side)")
-                if org.d.get("storage_blocked") and sbx.on_disk(slug):
-                    # disk-org soft cap (user verdict): the last 10% is the
-                    # journaling reserve — new turns wait it out
-                    raise RuntimeError(
-                        "org disk past its 90% soft cap — turns are paused "
-                        "until usage drops under 85% (delete files, use the "
-                        "recovery browser, or grow the disk)")
                 if org.node(nid).get("limit_locked"):
                     raise RuntimeError(
                         "halted: weekly Fable usage limit exhausted — waiting for the "
@@ -14830,9 +14666,7 @@ def _run_one_turn_recorded(slug: str, nid: str,
                     spawn_argv(org, nid, _build_cmd(org, nid)),
                     cwd=scratch_dir(slug, nid), env=env,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, encoding="utf-8", errors="replace",
-                    creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                                   if os.name == "nt" else 0))
+                    text=True, encoding="utf-8", errors="replace")
                 _leash(proc)              # dies with the backend (№29)
                 warmpool.journal_admit(
                     slug, nid, sid, "cold", _adm_reason, turn_hash or "",
@@ -15120,9 +14954,7 @@ def _run_one_turn_recorded(slug: str, nid: str,
                         cwd=scratch_dir(slug, nid),
                         env=env, stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        text=True, encoding="utf-8", errors="replace",
-                        creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                                       if os.name == "nt" else 0))
+                        text=True, encoding="utf-8", errors="replace")
                     _leash(proc)
                     with _state_lock:
                         st["proc"] = proc
@@ -17680,7 +17512,7 @@ def _turn_abandoned(slug: str, nid: str, door: str, err: str) -> bool:
             org = store.load_org(slug)
             if nid not in org.nodes or org.node(nid)["state"] != "live":
                 return False
-            name = str(org.node(nid).get("name") or nid)
+            name = str(org.node(nid).get("title") or nid)
             sup = str(org.node(nid).get("parent") or "")
             # typed (family runtime_recovery): the node's own copy is the frozen
             # rendering of runtime.turn_failed_terminal (test_events_producers §R)
@@ -17834,7 +17666,7 @@ def _retry_exhausted(slug: str, nid: str, run: int, err: str,
             org = store.load_org(slug)
             if nid not in org.nodes or org.node(nid)["state"] != "live":
                 return
-            name = str(org.node(nid).get("name") or nid)
+            name = str(org.node(nid).get("title") or nid)
             sup = str(org.node(nid).get("parent") or "")
             # typed (family runtime_recovery): frozen renderings of
             # runtime.turn_failed_repeated / runtime.report_stalled (test_events_producers §R)
@@ -18024,7 +17856,7 @@ def _parked_announce(slug: str, nid: str, kind: str, lane: str) -> bool:
                 return False
             run = int(n.get("parked_run") or 0) + 1
             n["parked_run"] = run
-            name = str(n.get("name") or nid)
+            name = str(n.get("title") or nid)
             err = str(fz.get("error") or "")[:300]
             if run != 1:
                 store.save_org(org)
@@ -18151,7 +17983,7 @@ def _limit_announce(slug: str, nid: str, lane: str,
                 return False
             run = int(n.get("limit_run") or 0) + 1
             n["limit_run"] = run
-            name = str(n.get("name") or nid)
+            name = str(n.get("title") or nid)
             err = str(fz.get("error") or "")[:300]
             # ⚠ the count is advanced on EVERY freeze, the message only on the
             # transition to 1. Bumping and announcing together would make the
@@ -19089,11 +18921,11 @@ def _after_turn(slug: str, nid: str, org: Org, res: dict[str, Any],
                                           _node_ref(o2, nid), bearer=nid))
                 store.save_org(o2)
         return
-    # per-org compaction threshold (user setting, 50–95%); the env default is
+    # per-org compaction threshold (user setting, 20–95%); the env default is
     # the fallback, everything hard-capped at 95%.
     #
     # ⚠ The FLOOR matters as much as the ceiling, and only the ceiling was
-    # here. `POST /settings` clamps to 50–95 (api.py:1012) but nothing else
+    # here. `POST /settings` clamps to 20–95 (api.py:1012) but nothing else
     # does: `defaults.json` is stored ORG-DOC-SHAPED and unvalidated
     # (api.py:894,921) and the doc itself is hand-editable, so a
     # zero-or-negative `compact_at` reached this line intact and made
@@ -20188,9 +20020,7 @@ def _compact_split_body(slug: str, nid: str) -> None:
                                 env=spawn_env(org, tier=str(n.get("model") or "")),
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                errors="replace",
-                                creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                                               if os.name == "nt" else 0))
+                                errors="replace")
         _leash(proc)
         try:
             out, _err = proc.communicate(input="/compact", timeout=COMPACT_TIMEOUT)
@@ -20450,9 +20280,7 @@ def remote_control_start(slug: str, nid: str) -> dict[str, Any]:
         proc = subprocess.Popen(
             _claude_argv() + ["remote-control", "--session-id", sid],
             cwd=cwd, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
-            text=True, encoding="utf-8", errors="replace",
-            creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                           if os.name == "nt" else 0))
+            text=True, encoding="utf-8", errors="replace")
     except OSError as e:
         _remote_unpark(slug, nid)
         return {"error": f"could not start the remote-control server: {e}"}
@@ -20502,6 +20330,24 @@ def _remote_save_hook(slug: str) -> None:
         remote_reap(slug)
 
 
+def _terminate_and_reap(proc: subprocess.Popen) -> None:
+    """`terminate()` alone leaves a zombie until someone `wait()`s it, and
+    `os.kill(pid, 0)` still succeeds on a zombie — so a caller that only
+    checks pid liveness never notices the server is actually gone. Wait for
+    the exit, and escalate to `kill()` for a server that ignores SIGTERM."""
+    try:
+        proc.terminate()
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    except OSError:
+        pass
+
+
 def remote_reap(slug: str) -> None:
     """Kill remote-control servers whose seat no longer exists (redteam
     2026-08-05: delete/archive/rename removed the node but `_remote_procs`
@@ -20522,19 +20368,13 @@ def remote_reap(slug: str) -> None:
         if k[1] not in alive:
             proc = _remote_procs.pop(k, None)
             if proc is not None:
-                try:
-                    proc.terminate()
-                except OSError:
-                    pass
+                _terminate_and_reap(proc)
 
 
 def remote_control_stop(slug: str, nid: str) -> dict[str, Any]:
     proc = _remote_procs.pop((slug, nid), None)
     if proc is not None:
-        try:
-            proc.terminate()
-        except OSError:
-            pass
+        _terminate_and_reap(proc)
     had_mail = False
     sid_driven = None
     with store.DOC_LOCK:
@@ -21177,42 +21017,6 @@ def clear_hard_freeze(org: Org, kind: str) -> int:
     return cleared
 
 
-def _org_write_acl(org: Org, blocked: bool) -> None:
-    """OS-level enforcement of the storage block (Windows): deny write-data /
-    add-file on the workspace AND the org's scratch tree while LEAVING DELETE
-    RIGHTS INTACT, so agents can clean up and self-heal. The scratch half is
-    the user-observed bypass (2026-07-31): agents' cwd IS their scratch dir,
-    so the old workspace-only deny never touched the tree they naturally
-    write. Measured: the deny ACE binds Docker bind mounts too (Docker
-    Desktop's file sharing writes as the host user), so sandboxed orgs are
-    enforced by the same ACE — container writes fail, deletes still work.
-    The sandbox home is counted but never ACL'd (transcripts/CLI state).
-    POSIX has no deny-write-but-allow-delete bit (dir -w blocks unlinking
-    too), so there enforcement is the advisory notice + steer only.
-    Disk-migrated orgs: icacls cannot reach ext4-over-WSL — their soft-cap
-    enforcement is the turn gate in storage_check's disk branch instead."""
-    if os.name != "nt" or sbx.on_disk(org.d["slug"]):
-        return
-    slug = org.d["slug"]
-    ws = org.d.get("workspace")
-    targets = [p for p in (ws, store.scratch_root(slug))
-               if p and os.path.isdir(p)]
-    user = os.environ.get("USERNAME") or "*S-1-1-0"
-    for t in targets:
-        try:
-            if blocked:
-                subprocess.run(["icacls", t, "/deny",
-                                f"{user}:(OI)(CI)(WD,AD)"],
-                               capture_output=True, timeout=15,
-                               creationflags=subprocess.CREATE_NO_WINDOW)  # type: ignore[attr-defined]
-            else:
-                subprocess.run(["icacls", t, "/remove:d", user],
-                               capture_output=True, timeout=15,
-                               creationflags=subprocess.CREATE_NO_WINDOW)  # type: ignore[attr-defined]
-        except OSError:
-            pass
-
-
 def _storage_ev(org: Org, level: str, scope: str, used_mb: float,
                 cap_mb: float | None) -> dict[str, Any]:
     """The typed storage notice (family runtime_recovery, `runtime.storage`): the
@@ -21224,86 +21028,34 @@ def _storage_ev(org: Org, level: str, scope: str, used_mb: float,
                        scope=scope)
 
 
-def _storage_check_disk(slug: str, org: Org) -> str | None:
-    """Storage enforcement for a DISK-MIGRATED org (user verdict): the ext4
-    cap itself is the hard limit (ENOSPC — no container stop, no ACL, ever);
-    this check runs the SOFT tiers. 80% warns every live node; 90% BLOCKS NEW
-    TURNS (the enforceable ext4 mapping of "agents blocked, engine keeps
-    journaling" — mail queues, the UI and the recovery path stay live, and
-    the last 10% is the reserve that lets in-flight turns journal their
-    transcripts); ≤85% auto-clears. ≥99% sets the hard-full flag the
-    recovery-browser alert renders persistently."""
-    from . import disk as dsk
-    du = dsk.usage(slug, max_age=5.0)
-    if du is None:
-        return None          # disk unmounted: nothing can write; ensure_container refuses anyway
-    used, total = du
-    frac = used / total if total else 0.0
-    nudge: list[str] = []
+def _clear_sandbox_storage_flags(slug: str) -> None:
+    """Docs written under the retired per-org disk can still carry these
+    flags; nothing else clears them for a sandboxed org, and a stuck
+    `storage_blocked` refuses uploads and outbox copies forever."""
+    flags = ("storage_blocked", "storage_warned", "storage_full")
     with store.DOC_LOCK:
         org = store.load_org(slug)
-        blocked = bool(org.d.get("storage_blocked"))
-        warned = bool(org.d.get("storage_warned"))
-        full = bool(org.d.get("storage_full"))
-        live = [i for i, n in org.nodes.items() if n["state"] == "live"]
-        mb = 1048576
-        result: str | None = None
-        if frac >= 0.99 and not full:
-            org.d["storage_full"] = True     # stage-4 alert state (persistent)
-            result = "full"
-        elif full and frac < 0.99:
-            org.d.pop("storage_full", None)
-            result = result or None
-        if frac >= 0.90 and not blocked:
-            org.d["storage_blocked"] = True
-            org._notify_ev(live, _storage_ev(org, "over", "disk", used / mb, total / mb))
-            nudge = live
-            result = "blocked"
-        elif blocked and frac <= 0.85:
-            org.d.pop("storage_blocked", None)
-            org.d.pop("storage_warned", None)
-            org._notify_ev(live, _storage_ev(org, "cleared", "disk", used / mb, total / mb))
-            result = "cleared"
-        elif frac >= 0.80 and not blocked and not warned:
-            org.d["storage_warned"] = True
-            org._notify_ev(live, _storage_ev(org, "heads_up", "disk", used / mb, total / mb))
-            nudge = live
-            result = "warned"
-        elif warned and frac < 0.75:
-            org.d.pop("storage_warned", None)   # re-arm below 75%
-        if result:
-            store.save_org(org)
-    if not result:
-        return None
-    for nid in nudge:
-        try:
-            if state(slug, nid)["busy"]:
-                send_message(slug, nid,
-                             "(orgtree) ⚠ Storage notice in your mail above — "
-                             "act on it NOW, mid-task.")
-        except Exception:                       # noqa: BLE001 — best-effort
-            pass
-    notify(slug, "", "storage_" + result)
-    return result
+        d = cast("dict[str, Any]", org.d)
+        if not any(k in d for k in flags):
+            return
+        for k in flags:
+            d.pop(k, None)
+        store.save_org(org)
 
 
 def storage_check(slug: str) -> str | None:
-    """Storage enforcement dispatch. Disk-migrated sandboxed orgs → the soft
-    tiers over the ext4 cap (_storage_check_disk). Unsandboxed kiosks with a
-    loose cap → the icacls write-block below (D-031: an unsandboxed kiosk
-    bounds configuration and money, not capability — checked between turns).
-    Sandboxed-but-not-yet-migrated orgs enforce nothing here: their disk and
-    its cap arrive with the first container need. The pre-disk sandbox
-    enforcement (volume measurement → container stop → storage freeze) is
-    RETIRED (user ruling 2026-08-01, D-063)."""
+    """Storage enforcement for unsandboxed kiosks with a storage limit: the
+    tiers below warn near the limit and set `storage_blocked` over it, which
+    pauses uploads and outbox copies (D-031: an unsandboxed kiosk bounds
+    configuration and money, not capability — checked between turns).
+    Sandboxed orgs have no storage cap and enforce nothing here."""
     # №22: the full workspace walk runs OUTSIDE the doc lock — it reads the
     # filesystem, not the doc, and holding DOC_LOCK across a multi-GB walk
     # starved the whole turn machinery (and timed out MCP calls into
     # duplicate-mail retries)
     org = store.load_org(slug)
     if sbx.is_sandboxed(org):
-        if sbx.on_disk(slug):
-            return _storage_check_disk(slug, org)
+        _clear_sandbox_storage_flags(slug)
         return None
     used = workspace_usage_bytes(org)
     nudge: list[str] = []      # live nodes to steer mid-turn after the lock
@@ -21322,7 +21074,6 @@ def storage_check(slug: str) -> str | None:
         live = [i for i, n in org.nodes.items() if n["state"] == "live"]
         if over and not blocked:
             org.d["storage_blocked"] = True
-            _org_write_acl(org, True)
             org._notify_ev(live, _storage_ev(org, "over", "storage", used / 1048576,
                                              float(lim_mb)))
             store.save_org(org)
@@ -21331,7 +21082,6 @@ def storage_check(slug: str) -> str | None:
         elif blocked and not over:
             org.d.pop("storage_blocked", None)
             org.d.pop("storage_warned", None)   # a fresh climb re-warns
-            _org_write_acl(org, False)
             org._notify_ev(live, _storage_ev(org, "cleared", "storage", used / 1048576,
                                              float(lim_mb) if lim_mb else None))
             store.save_org(org)
@@ -21415,7 +21165,6 @@ def immediate_command(slug: str, nid: str, text: str) -> bool:
     if word not in IMMEDIATE_CMDS:
         return False
     org = store.load_org(slug)
-    _deployment_org_gate(org)
     n = org.node(nid)
     sid = n["session_id"]
     model = claude_model_for(org, nid)   # the id THIS CLI knows (see above)
@@ -21443,9 +21192,7 @@ def immediate_command(slug: str, nid: str, text: str) -> bool:
                                     stdin=subprocess.PIPE,
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, text=True,
-                                    encoding="utf-8", errors="replace",
-                                    creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                                                   if os.name == "nt" else 0))
+                                    encoding="utf-8", errors="replace")
             _leash(proc)
             try:
                 out, _err = proc.communicate(input=text.strip(), timeout=120)
@@ -22339,7 +22086,7 @@ SELF_RESTART_MIN_GAP: Final = 300.0
 def _detached_spawn(args: list[str], cwd: str, logpath: str,
                     env: dict[str, str] | None = None) -> "subprocess.Popen[Any] | None":
     """Launch a process that SURVIVES this backend dying — which is the
-    point: update.ps1 stops and restarts the very process spawning it.
+    point: update.sh stops and restarts the very process spawning it.
 
     ⚠ RETURNS THE HANDLE (D-142/a). It used to return None unconditionally,
     which made a successful spawn and a refused one INDISTINGUISHABLE to the
@@ -22356,28 +22103,9 @@ def _detached_spawn(args: list[str], cwd: str, logpath: str,
     not name a cause. With this line they are three different logs.
     """
     lf = open(logpath, "ab")
-    kwargs: dict[str, Any] = {}
-    if os.name == "nt":
-        # ⚠ CREATE_NO_WINDOW, *not* DETACHED_PROCESS — this is the whole cause
-        # of the peer's "log has only the launch banner" (neoja 2026-08-09).
-        # MEASURED, three flag sets against one probe script that writes via
-        # Write-Host, Write-Output, [Console]::Out and a native child:
-        #   DETACHED_PROCESS|NEW_GROUP   0/4 lines reached the log — NOTHING
-        #   CREATE_NO_WINDOW|NEW_GROUP   4/4
-        #   NEW_GROUP alone              4/4
-        # DETACHED_PROCESS detaches the child from the console, and with it
-        # goes every write to the redirected handle. So EVERY self-update on
-        # Windows has always logged nothing at all; the failure was never
-        # specific to their machine, and no local deploy exercises this path
-        # (an operator runs update.ps1 through a shell that has a console).
-        # Survival is not lost by the swap: a Windows child already outlives
-        # its parent — DETACHED_PROCESS governs the console, not the lifetime
-        # — verified by killing the parent with os._exit mid-flight and
-        # watching the child finish and write.
-        # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
-        kwargs["creationflags"] = 0x08000000 | 0x00000200
-    else:
-        kwargs["start_new_session"] = True
+    # a new session puts the child outside the backend's process group, so a
+    # signal to that group (a terminal ^C, a service stop) does not reach it
+    kwargs: dict[str, Any] = {"start_new_session": True}
     if env is not None:
         kwargs["env"] = env
     try:
@@ -22652,11 +22380,6 @@ def launch_self_restart(
     `force=True` on its own is refused right here, so no later caller can turn
     the flag into a hard cut by passing it and nothing else.
     """
-    if not deployment.current_policy().allow_agent_restart:
-        raise RuntimeError(
-            "the frozen deployment profile disables agent-triggered "
-            "self-update and self-restart; deploy this installation through "
-            "an operator-controlled path")
     if target not in ("org", "mailhub", "both"):
         raise ValueError(f"unknown self-restart target {target!r}")
     hold_token = quiesced.get("hold_token") if quiesced else None
@@ -22742,10 +22465,7 @@ def launch_self_restart(
     armed_window = False
     try:
         if target in ("org", "both"):
-            # Linux is a first-class install target (user ruling 2026-08-06):
-            # update.sh mirrors update.ps1 step for step
-            #
-            # ☠ NO -OnlyIfBehind / ORGTREE_ONLY_IF_BEHIND (user ruling 2026-08-21).
+            # ☠ NO ORGTREE_ONLY_IF_BEHIND (user ruling 2026-08-21).
             # This launch used to pass it, and that made the tool STRUCTURALLY
             # UNABLE to deploy a local commit, silently. Measured here the same
             # morning: three fixes were merged locally to main and the tool was
@@ -22762,7 +22482,7 @@ def launch_self_restart(
             # gain. What stops that is the CALLER deciding it has a reason to
             # deploy — now said plainly in the tool card and the prompt — not a
             # gate that also silently swallows the legitimate case. The flag stays
-            # DECLARED in both scripts for operators/scheduled jobs; nothing in
+            # DECLARED in update.sh for operators/scheduled jobs; nothing in
             # this repo passes it any more.
             # ⚠ D-142/a: the window is armed for the ORG leg ONLY, and on the
             # child that can actually kill us. A mailhub-only deploy rebuilds a
@@ -22770,26 +22490,17 @@ def launch_self_restart(
             # would stop every org on the machine for a restart that was never
             # coming. On target="both" TWO children are spawned and only this one
             # is the danger — the hub leg literally sleeps 45s and then rebuilds.
-            if os.name == "nt":
-                child = _detached_spawn(
-                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                     "-File", os.path.join(repo, "update.ps1")], repo, logpath)
-                if child is not None and child_started is not None:
-                    child_started(child)
-                armed_window = _arm_deploy_window(child)
-            else:
-                # ⚠ the var is cleared EXPLICITLY, not merely left unset. update.sh
-                # reads ${ORGTREE_ONLY_IF_BEHIND:-} from its inherited environment,
-                # so simply passing no env would let an ambient value — a leftover
-                # systemd unit, a profile export on the box — silently re-gate the
-                # deploy and reinstate the exact bug D-142 removed, on Linux only,
-                # where it is hardest to notice.
-                child = _detached_spawn(
-                    ["bash", os.path.join(repo, "update.sh")], repo, logpath,
-                    env={**os.environ, "ORGTREE_ONLY_IF_BEHIND": ""})
-                if child is not None and child_started is not None:
-                    child_started(child)
-                armed_window = _arm_deploy_window(child)
+            # ⚠ the var is cleared EXPLICITLY, not merely left unset. update.sh
+            # reads ${ORGTREE_ONLY_IF_BEHIND:-} from its inherited environment,
+            # so simply passing no env would let an ambient value — a leftover
+            # systemd unit, a profile export on the box — silently re-gate the
+            # deploy and reinstate the exact bug D-142 removed.
+            child = _detached_spawn(
+                ["bash", os.path.join(repo, "update.sh")], repo, logpath,
+                env={**os.environ, "ORGTREE_ONLY_IF_BEHIND": ""})
+            if child is not None and child_started is not None:
+                child_started(child)
+            armed_window = _arm_deploy_window(child)
             launched.append("org backend (git pull + rebuild + restart — "
                             "EVERY org on this machine restarts)")
         if target in ("mailhub", "both"):
@@ -22798,19 +22509,14 @@ def launch_self_restart(
                 warnings.append("no hub/compose.yaml in this clone — mail hub "
                                 "skipped")
             else:
-                # "both": update.ps1 owns the git pull; the hub leg only waits
+                # "both": update.sh owns the git pull; the hub leg only waits
                 # for it and rebuilds (two concurrent pulls race the git index).
                 # "mailhub" alone pulls for itself first.
                 if target == "both":
-                    cmd_nt = "Start-Sleep 45; docker compose up -d --build"
-                    cmd_px = "sleep 45 && docker compose up -d --build"
+                    cmd = "sleep 45 && docker compose up -d --build"
                 else:
-                    cmd_nt = "git pull; docker compose up -d --build"
-                    cmd_px = "git pull && docker compose up -d --build"
-                child = _detached_spawn(
-                    ["powershell", "-NoProfile", "-Command", cmd_nt]
-                    if os.name == "nt" else ["bash", "-lc", cmd_px],
-                    hubdir, logpath)
+                    cmd = "git pull && docker compose up -d --build"
+                child = _detached_spawn(["bash", "-lc", cmd], hubdir, logpath)
                 if child is not None and child_started is not None:
                     child_started(child)
                 launched.append("mail hub container (rebuilt in place — the "
@@ -23067,11 +22773,6 @@ def arm_prime_restart(slug: str, nid: str, target: str,
     that reboots every few minutes would hold a deadline that never expires
     and the feature would silently do nothing on exactly the box that needs
     it most."""
-    if not deployment.current_policy().allow_agent_restart:
-        raise RuntimeError(
-            "the frozen deployment profile disables agent-triggered primed "
-            "restart; deploy this installation through an operator-controlled "
-            "path")
     if target not in ("org", "mailhub", "both"):
         raise ValueError(f"unknown self-restart target {target!r}")
     with _prime_lock:
@@ -23140,10 +22841,6 @@ def arm_prime_restart(slug: str, nid: str, target: str,
 def cancel_prime_restart(slug: str, nid: str) -> dict[str, Any]:
     """Disarm. A cancel with nothing armed is a benign no-op that SAYS it was
     a no-op — the caller is usually checking, not undoing."""
-    if not deployment.current_policy().allow_agent_restart:
-        raise RuntimeError(
-            "the frozen deployment profile disables agent-triggered primed "
-            "restart; manage deployment through an operator-controlled path")
     with _prime_lock:
         d = _prime_read()
         executing = d.get("executing")
@@ -23544,10 +23241,6 @@ def start_prime_restart_engine() -> None:
     registry; this loop only watches for the moment to spend it — which is
     what makes an armed prime survive this process dying and coming back."""
     global _prime_started
-    if not deployment.current_policy().allow_agent_restart:
-        # A prime left by an earlier standard-profile process stays durable
-        # but inert. Frozen mode must never spend it in the background.
-        return
     if _prime_started:
         return
     # An executing record belongs to the process that wrote it. Reaching this
@@ -23686,11 +23379,13 @@ def _note_steer_attempt(slug: str, nid: str, toks: Iterable[str],
             hit = False
             for b in (org.d.get("delivering") or {}).get(nid) or []:
                 if b.get("tok") in drop:
-                    prev = b.get("attempt") if isinstance(b.get("attempt"), dict) else {}
-                    b["attempt"] = {"via": "steer", "outcome": str(outcome),
-                                    "at": now_iso(),
-                                    "n": int(prev.get("n") or 0) + 1,
-                                    "reason": str(reason or "")[:200]}
+                    # own key: the delivery envelope's own "attempt" (int
+                    # redrain count, :6983) shares this dict and collided here
+                    prev = b.get("steer_attempt") if isinstance(b.get("steer_attempt"), dict) else {}
+                    b["steer_attempt"] = {"via": "steer", "outcome": str(outcome),
+                                           "at": now_iso(),
+                                           "n": int(prev.get("n") or 0) + 1,
+                                           "reason": str(reason or "")[:200]}
                     hit = True
             if hit:
                 store.save_org(org)
@@ -24806,15 +24501,6 @@ def _wd_proc_alive(target: str) -> bool:
             return False
         finally:
             s.close()
-    if os.name == "nt":
-        import ctypes
-        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, num)
-        if not h:
-            return False
-        code = ctypes.c_ulong()
-        ok = ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
-        ctypes.windll.kernel32.CloseHandle(h)
-        return bool(ok) and code.value == 259          # STILL_ACTIVE
     try:
         os.kill(num, 0)
         return True
@@ -24826,85 +24512,20 @@ _WD_BASH_TTL = 300.0
 _wd_bash_cache: dict[str, Any] = {"at": 0.0, "path": None}
 
 
-def wd_is_wsl_bash(path: str) -> bool:
-    """True for `C:\\Windows\\System32\\bash.exe` — the **WSL launcher**.
-
-    It is on the service PATH, it is named bash, and handing a dog's command
-    to it would run that command inside a Linux VM: `E:\\...` unnameable, the
-    scratch cwd meaningless, the output about a different filesystem. That is
-    worse than cmd.exe refusing `grep`, because it SUCCEEDS at something —
-    and a wrong answer that looks like an answer is the failure mode this
-    whole subsystem was just repaired for.
-
-    Its own function so it can be tested directly. Left inline it was
-    unreachable in practice: a real Git install is found first, so the
-    exclusion would have been dead code that no check could distinguish from
-    working code."""
-    root = os.environ.get("SystemRoot", r"C:\Windows")
-    return os.path.dirname(os.path.realpath(path)).lower() == \
-        os.path.realpath(os.path.join(root, "System32")).lower()
-
-
 def _wd_resolve_bash() -> str | None:
     """Find a REAL bash for a `shell="bash"` dog, or None.
 
-    ⚠ On Windows, `shutil.which("bash")` is a trap, not a shortcut:
-    `C:\\Windows\\System32\\bash.exe` is the **WSL launcher**. It is on the
-    service PATH, it is named bash, and it would run the dog's command inside
-    a Linux VM with an entirely different filesystem — `E:\\...` unnameable,
-    the scratch cwd meaningless, output about the wrong machine. That is a
-    far worse failure than cmd.exe refusing `grep`, because it SUCCEEDS at
-    something. It is excluded by name below, before anything else.
-
-    ⚠ And `shutil.which` is consulted LAST, not first. Measured while writing
-    this: called from an agent's terminal it returned
-    `…\\Git\\usr\\bin\\bash.exe`, because that terminal has Git on its PATH —
-    while the BACKEND SERVICE, which is what actually spawns dogs, has not
-    and would land on `…\\Git\\bin\\bash.exe` instead. Two processes
-    resolving two different bashes from the same code is the ambient-
-    environment trap this subsystem already lost a day to. Fixed locations
-    and the registry are the same answer for everyone, so they go first, and
-    PATH is only the fallback for an install nothing else can name."""
-    cands: list[str] = []
-    if os.name == "nt":
-        # `bin\bash.exe` (the wrapper that sets up the MSYS environment), not
-        # `usr\bin\bash.exe` (the raw binary) — the former is Git for
-        # Windows' supported entry point
-        for base in (os.environ.get("ProgramFiles", r"C:\Program Files"),
-                     os.environ.get("ProgramFiles(x86)",
-                                    r"C:\Program Files (x86)"),
-                     os.path.join(os.environ.get("LOCALAPPDATA", ""),
-                                  "Programs")):
-            if base:
-                cands.append(os.path.join(base, "Git", "bin", "bash.exe"))
-        # Git for Windows records where it went; the paths above are only the
-        # DEFAULTS, and an install elsewhere is ordinary
-        try:
-            import winreg                                   # noqa: PLC0415
-            for hive, key in ((winreg.HKEY_LOCAL_MACHINE,
-                               r"SOFTWARE\GitForWindows"),
-                              (winreg.HKEY_LOCAL_MACHINE,
-                               r"SOFTWARE\WOW6432Node\GitForWindows"),
-                              (winreg.HKEY_CURRENT_USER,
-                               r"SOFTWARE\GitForWindows")):
-                try:
-                    with winreg.OpenKey(hive, key) as k:
-                        root = str(winreg.QueryValueEx(k, "InstallPath")[0])
-                    cands.append(os.path.join(root, "bin", "bash.exe"))
-                except OSError:
-                    continue
-        except ImportError:
-            pass
-        found = shutil.which("bash")
-        if found and not wd_is_wsl_bash(found):
-            cands.append(found)          # last resort: a non-WSL bash on PATH
-    else:
-        cands += ["/bin/bash", "/usr/bin/bash", "/usr/local/bin/bash"]
-        found = shutil.which("bash")
-        if found:
-            cands.append(found)
+    ⚠ `shutil.which` is consulted LAST, not first: the backend service's PATH
+    is not an agent terminal's PATH, and two processes resolving two different
+    bashes from the same code is the ambient-environment trap this subsystem
+    already lost a day to. Fixed locations are the same answer for everyone,
+    so they go first, and PATH is only the fallback."""
+    cands = ["/bin/bash", "/usr/bin/bash", "/usr/local/bin/bash"]
+    found = shutil.which("bash")
+    if found:
+        cands.append(found)
     for c in cands:
-        if c and os.path.isfile(c):
+        if os.path.isfile(c):
             return os.path.realpath(c)
     return None
 
@@ -24912,7 +24533,7 @@ def _wd_resolve_bash() -> str | None:
 def wd_bash_exe() -> str | None:
     """The resolved bash, cached — None when this machine has none.
 
-    Cached because it walks the filesystem and the registry, and it is asked
+    Cached because it walks the filesystem, and it is asked
     once per dog per tick. The cache re-resolves when the remembered path
     stops existing (an uninstall) and re-tries a NEGATIVE answer every
     `_WD_BASH_TTL` (an install), so neither answer is permanent."""
@@ -24934,14 +24555,12 @@ def _wd_popen(org: Org, owner: str, cmd: str,
     the owner's scratch. clean_env like every agent process.
 
     `shell_pref` is the dog's `shell` field (2026-08-22). Absent/"native" is
-    the historical behaviour EXACTLY — `shell=True`, i.e. cmd.exe on Windows
-    — so every dog armed before this existed is untouched by construction
-    rather than by remembering to. "bash" runs `bash -lc` instead.
+    `shell=True`, i.e. /bin/sh. "bash" runs `bash -lc` instead.
 
     ⚠ When "bash" was asked for and none can be found, this RAISES rather
-    than falling back to cmd.exe. A silent fallback would rebuild the very
-    defect this file spent a day on, one level up: the agent asks for bash,
-    is given cmd, writes bash, and the dog never fires — and this time the
+    than falling back to sh. A silent fallback would rebuild the very defect
+    this file spent a day on, one level up: the agent asks for bash, is given
+    another shell, writes bash, and the dog never fires — and this time the
     tool card would have TOLD it bash was fine. `watchdog_create` refuses the
     dog up front for the same reason; this is the tick-time half of it."""
     slug = org.d["slug"]
@@ -24956,7 +24575,7 @@ def _wd_popen(org: Org, owner: str, cmd: str,
             raise OSError(
                 "this watchdog was created with shell='bash' and no bash can "
                 "be found on this machine any more — refusing to run it in "
-                "cmd.exe instead, which would silently match nothing")
+                "sh instead, which would silently match nothing")
         argv, shell = [exe, "-lc", cmd], False
     else:
         argv, shell = cmd, True
@@ -24968,14 +24587,12 @@ def _wd_popen(org: Org, owner: str, cmd: str,
         # with the OWNER's hands, and the owner's own processes carry the
         # org's key — a keyless fork is exactly the misbilling class that
         # guard exists to catch
-        env=spawn_env(org),
-        creationflags=(subprocess.CREATE_NO_WINDOW      # type: ignore[attr-defined]
-                       if os.name == "nt" else 0))
+        env=spawn_env(org))
     # ⚠ WHICH TREE THIS CHILD BELONGS TO IS THE WHOLE QUESTION (D-176). It is
     # spawned HERE, on a backend thread, so its parent is the backend and NOT
     # the CLI of whichever turn armed the dog — which is why a dog outlives its
     # creator's turn, as advertised. Measured on the live box 2026-08-29: a
-    # stream dog's `cmd.exe` had the backend's pid as its parent while the
+    # stream dog's shell had the backend's pid as its parent while the
     # arming agent's CLI was a different process entirely.
     # `_leash` then ties it to the backend the same way every CLI child is
     # tied, so the OTHER end is bounded too: a force-killed backend reaps its
@@ -24986,29 +24603,10 @@ def _wd_popen(org: Org, owner: str, cmd: str,
 
 
 def _wd_kill_tree(proc: "subprocess.Popen[str] | None") -> None:
-    """Kill a dog's child AND everything it started.
-
-    ⚠ `proc.kill()` IS NOT ENOUGH ON WINDOWS, and this was measured on the
-    live box (2026-08-29), not reasoned about. `_wd_popen` runs the target
-    through `cmd.exe /c <target>`, so the process we hold is the SHELL and the
-    target is its child. Killing the shell leaves the grandchild running with
-    no parent: a create-time smoke run of `ping -n 100000 127.0.0.1` was killed
-    after its 8-second timeout and the PING was still running afterwards,
-    orphaned, good for another twenty-seven hours. Every create with a target
-    that outlives the smoke window leaked one.
-
-    So the whole tree goes, by pid, through the OS. `taskkill /T` walks the
-    real parent-child links rather than a list we would have to keep in step
-    with reality."""
+    """Kill a dog's child, then reap it so the death bookkeeping that follows
+    observes an exit instead of racing the kill."""
     if proc is None or proc.poll() is not None:
         return
-    if os.name == "nt":
-        try:
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                           capture_output=True, timeout=15,
-                           creationflags=subprocess.CREATE_NO_WINDOW)  # type: ignore[attr-defined]
-        except (OSError, subprocess.SubprocessError):
-            pass
     try:
         proc.kill()
     except OSError:
@@ -25020,8 +24618,7 @@ def _wd_kill_tree(proc: "subprocess.Popen[str] | None") -> None:
 
 
 # How much of a check's raw output rides on the dog. Enough to READ the shell's
-# own error ("'grep' is not recognized as an internal or external command")
-# without turning the org doc into a log file.
+# own error ("sh: 1: grep: not found") without turning the org doc into a log file.
 _WD_OUT_KEEP = 400
 # A dog is only "quietly wrong" once it has had real chances to be right.
 _WD_QUIET_CHECKS = 20                    # checks with no match…
@@ -25050,24 +24647,20 @@ _WD_SPENT_CHECKS = 20          # a spent `pid:` dog, this many checks on
 
 def wd_shell(org: Org, shell_pref: Any = None) -> str:
     """Which shell a command/stream dog's target is ACTUALLY handed to —
-    "sh", "cmd" or "bash". ONE source of truth, so the tool description, the
+    "sh" or "bash". ONE source of truth, so the tool description, the
     create-time smoke run and the health note cannot drift from `_wd_popen`.
 
-    This is the fact that killed three dogs on this machine silently
-    (measured 2026-08-22): `_wd_popen` passes `shell=True`, which on Windows
-    is cmd.exe, while `orgtree_watchdog` told agents a dog "runs WITH YOUR
-    HANDS (needs your bash)". It does run with the owner's AUTHORITY — but in
-    the SERVICE's shell, which is not the bash the agent types into. Agents
-    wrote grep/sed/`$(...)`/`/tmp` because the tool told them to, cmd.exe
-    matched nothing, and the dogs sat `armed, fired: 0` for up to nine days
-    looking exactly like "the condition never happened".
+    Dogs once sat `armed, fired: 0` for up to nine days because the tool card
+    promised one shell while `_wd_popen` handed the target to another; the
+    agent wrote for the promised shell and nothing matched, which looked
+    exactly like "the condition never happened".
 
     `shell_pref` is the dog's opt-in `shell` field; absent means native."""
     if sbx.is_sandboxed(org):
         return "sh"                       # sh -lc, inside the owner's container
     if str(shell_pref or "") == "bash":
         return "bash"
-    return "cmd" if os.name == "nt" else "sh"
+    return "sh"
 
 
 def wd_shell_note(shell: str, sandboxed: bool = False) -> str:
@@ -25077,15 +24670,7 @@ def wd_shell_note(shell: str, sandboxed: bool = False) -> str:
         return ("target runs in `bash -lc` (" + (wd_bash_exe() or "?")
                 + ") — the full POSIX idiom works: grep, sed, awk, $(...), "
                   "$VAR, pipes. It is NOT your interactive shell, though: it "
-                  "starts from the backend service's environment, and on "
-                  "Windows paths are MSYS-style (/e/Libraries/... or "
-                  "'E:/Libraries/...' with forward slashes), not E:\\...")
-    if shell == "cmd":
-        return ("target runs in cmd.exe with the BACKEND SERVICE's PATH — not "
-                "bash, and Git's usr\\bin is NOT on it. grep, sed, awk, tr, "
-                "$(...), $VAR and /tmp/... all fail here, and `find` resolves "
-                "to Windows FIND.EXE, not GNU find. Use findstr, dir /b, "
-                "%VAR%, and %TEMP%.")
+                  "starts from the backend service's environment.")
     return ("target runs in a POSIX shell" + (" INSIDE your sandbox container"
                                               if sandboxed else "")
             + " with the backend service's environment — your interactive "
@@ -25098,6 +24683,9 @@ _WD_SHELL_ERRORS = (
     "command not found",
     "no such file or directory",
 )
+# dash (Linux's /bin/sh) skips the word "command": "/bin/sh: 1: X: not
+# found". Caught separately because it is a shape, not a fixed phrase.
+_WD_SHELL_ERROR_RE = re.compile(r"^\S*sh: \d+: .+: not found$", re.MULTILINE)
 
 
 def wd_output_broken(out: str) -> str | None:
@@ -25105,11 +24693,15 @@ def wd_output_broken(out: str) -> str | None:
     own words. Returns the signature found, or None.
 
     Deliberately a positive test rather than "the output was empty" — empty
-    is ambiguous (a healthy `findstr` that matched nothing prints nothing
-    too), "is not recognized" is not. Team charter §3: prefer positive
+    is ambiguous (a healthy `grep` that matched nothing prints nothing
+    too), "command not found" is not. Team charter §3: prefer positive
     markers over asserted absences."""
     low = (out or "").lower()
-    return next((s for s in _WD_SHELL_ERRORS if s in low), None)
+    hit = next((s for s in _WD_SHELL_ERRORS if s in low), None)
+    if hit:
+        return hit
+    m = _WD_SHELL_ERROR_RE.search(out or "")
+    return m.group(0) if m else None
 
 
 def _wd_age_s(stamp: Any) -> float | None:
@@ -25186,7 +24778,7 @@ def wd_subject_lost(w: dict[str, Any]) -> dict[str, Any] | None:
     quiet, since = _wd_stale_ok(w)
     hw = cast("dict[str, Any]", w.get("high_water") or {})
     if kind == "command":
-        # NOT "the command failed" — a `findstr` waiting for a string that has
+        # NOT "the command failed" — a `grep` waiting for a string that has
         # not appeared exits 1 every single time and that is the HEALTHY state
         # of a working dog. The detectable thing is narrower and certain: the
         # check could not be performed at all.
@@ -25482,11 +25074,11 @@ def _wd_owner_lost(org: Org, w: dict[str, Any]) -> str | None:
         # the same "checked once, never again" lesson as the two above, for
         # the shell opt-in: `watchdog_create` refuses a bash dog when there is
         # no bash, and uninstalling Git afterwards must not leave the dog
-        # quietly running in cmd.exe — which is the failure it opted OUT of
+        # quietly running in sh — which is the failure it opted OUT of
         return ("it was created with shell='bash' and no bash exists on this "
-                "machine any more — running it in cmd.exe instead would "
+                "machine any more — running it in sh instead would "
                 "silently match nothing (re-create it with shell='native' "
-                "and a cmd target, or reinstall Git)")
+                "and a POSIX sh target, or reinstall bash)")
     if kind == "file":
         if sbx.is_sandboxed(org):
             # the org moved into a container after the dog was armed; the
@@ -25767,7 +25359,7 @@ def _wd_mark_check(w: dict[str, Any], now_t: float, raw: str = "",
     w["last_check"] = now_iso()
     w["_last_check_ts"] = now_t
     w["checks_run"] = int(w.get("checks_run") or 0) + 1
-    # "" is a real observation (a healthy findstr that matched nothing), so it
+    # "" is a real observation (a healthy grep that matched nothing), so it
     # is stored, not skipped — the health note distinguishes "no output" from
     # "never ran" by checks_run, not by this field being falsy
     w["last_output"] = (raw or "")[:_WD_OUT_KEEP]
@@ -25880,8 +25472,8 @@ def _wd_run_command(org: Org,
 
     ⚠ The raw output is returned, not just the matches (2026-08-22). It used
     to be dropped on the floor, and that is precisely why a dog running a
-    command that never even STARTED — cmd.exe answering "'grep' is not
-    recognized" every 60s for nine days — was indistinguishable from a dog
+    command that never even STARTED — the shell answering "command not
+    found" every 60s for nine days — was indistinguishable from a dog
     patiently waiting for a condition. What the dog SEES is the evidence; a
     subsystem whose job is to notice things must not throw it away."""
     tgt = str(w["target"])
@@ -25940,7 +25532,7 @@ def _wd_cmd_submit(slug: str, w: dict[str, Any], org: Org,
                 w2 = o2._watchdog(wid)
             except LedgerError:
                 return                          # removed mid-check
-            # ⚠ NOT "the command failed" — a `findstr` waiting for a string
+            # ⚠ NOT "the command failed" — a `grep` waiting for a string
             # that has not appeared exits 1 on every check, and that is a
             # HEALTHY dog doing its job. The countable thing is narrower: the
             # shell said the target does not exist, so no check happened at
@@ -26157,8 +25749,7 @@ def _wd_reap_stream(key: tuple[str, str]) -> None:
         ent = _wd_streams.pop(key, None)
     if ent is not None:
         # a stream dog's target is a LISTENER — the longest-lived child this
-        # subsystem makes and the one most worth reaping properly. Killing the
-        # cmd.exe wrapper left the listener itself running (D-176).
+        # subsystem makes and the one most worth reaping properly (D-176).
         _wd_kill_tree(ent["proc"])
 
 
@@ -26300,21 +25891,11 @@ def forget(slug: str, nids: Iterable[str]) -> None:
     """After a user delete of NODES: drop runtime state and remove org-owned
     scratch dirs. Lineage ids share their base's scratch, so only base ids
     delete directories; session transcripts under ~/.claude are deliberately
-    left alone.
-
-    ⚠ The scratch base must branch on the DISK-MIGRATED case exactly like
-    scratch_dir() does (redteam 2026-08-05): rmtree aimed at
-    store.scratch_root for a disk-migrated org deleted a path that never
-    existed — ignore_errors swallowed the miss and the agent's working
-    folder stayed on the org disk forever, counted against its quota."""
+    left alone."""
     import shutil
     nids = set(nids)
     forget_state(slug, nids)
-    if sbx.on_disk(slug):
-        from . import disk as dsk
-        base = dsk.windows_sub(slug, "scratch")
-    else:
-        base = store.scratch_root(slug)
+    base = store.scratch_root(slug)
     for nid in {n for n in nids if "@" not in n}:
         shutil.rmtree(os.path.join(base, nid), ignore_errors=True)
 
@@ -26486,14 +26067,8 @@ def reconcile(slug: str) -> list[str]:
                 pid = rc.get("pid") if isinstance(rc, dict) else None
                 if pid:
                     try:
-                        if os.name == "nt":
-                            subprocess.run(
-                                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                                capture_output=True, timeout=15,
-                                creationflags=subprocess.CREATE_NO_WINDOW)  # type: ignore[attr-defined]
-                        else:
-                            os.kill(int(pid), 15)
-                    except (OSError, subprocess.TimeoutExpired, ValueError):
+                        os.kill(int(pid), 15)
+                    except (OSError, ValueError):
                         pass
         if rc_cleared:
             store.save_org(org)
@@ -26557,8 +26132,8 @@ def reconcile(slug: str) -> list[str]:
             # so the repeat is explained on the desk instead of silent.
             unk = sum(len(b.get("mail") or []) + len(b.get("notices") or [])
                       for b in batches
-                      if isinstance(b.get("attempt"), dict)
-                      and b["attempt"].get("outcome") == "unknown")
+                      if isinstance(b.get("steer_attempt"), dict)
+                      and b["steer_attempt"].get("outcome") == "unknown")
             if unk:
                 log = org.d.setdefault("steered_log", {}).setdefault(dnid, [])
                 log.append({

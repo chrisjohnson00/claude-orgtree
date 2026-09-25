@@ -616,6 +616,62 @@ check("parked + limited · superior copy and top-level user notice == old text; 
       _parked_and_limited)
 
 
+def rig_titled():
+    """boss → "Kid Worker" (id kid-worker): a report whose title differs from its id,
+    which rig2's title == id nodes cannot tell apart."""
+    _n[0] += 1
+    slug = f"evprod{_n[0]}"
+    o = Org.create(slug, dirs=[_TMP])
+    o.hire(USER, None, "opus", 20, "boss")
+    o.hire("boss", "boss", "haiku", 5, "Kid Worker", add_dirs=[],
+           tools={"bash": True, "web": False, "edit": False, "subagents": False, "mcp": []},
+           org_visibility="team", charter="runtime fixture")
+    assert "kid-worker" in o.nodes and o.node("kid-worker")["title"] == "Kid Worker", \
+        list(o.nodes)
+    store.save_org(o)
+    return slug
+
+
+def _title_not_id():
+    kid, title, both = "kid-worker", "Kid Worker", "Kid Worker (kid-worker)"
+    slug = rig_titled()
+    assert store.load_org(slug).node_ref(kid)["name"] == title
+    o = store.load_org(slug)
+    segs = S._state_segments(o, "boss", "[ORG STATE]", {}, "")
+    snap = events.decode_ev(segs[0]["event"])["snapshot"]
+    assert [r["name"] for r in snap["reports"]] == [title], snap["reports"]
+    kind = next(iter(S._PARKED_KINDS))
+    o.node(kid)["frozen"] = {"cause": "auth", "auth": True, "error": "401 nope"}
+    store.save_org(o)
+    with Quiet():
+        assert S._parked_announce(slug, kid, kind, "claude/primary") is True
+    sup = box_last(slug, "boss")
+    sev = decoded(sup)
+    assert both in sup["body"], sup["body"]
+    assert sev["report_name"] == title and sev["object"]["name"] == title, sev
+    slug = rig_titled()
+    o = store.load_org(slug)
+    o.node(kid)["frozen"] = {"limit": True, "until": "2026-09-07T00:00:00Z", "error": "429"}
+    store.save_org(o)
+    with Quiet():
+        assert S._limit_announce(slug, kid, "claude/primary") is True
+    sup = box_last(slug, "boss")
+    assert both in sup["body"] and decoded(sup)["report_name"] == title, sup["body"]
+    slug = rig_titled()
+    with Quiet():
+        assert S._turn_abandoned(slug, kid, "idle watchdog", "boom") is True
+    sup = box_last(slug, "boss")
+    assert both in sup["body"] and decoded(sup)["report_name"] == title, sup["body"]
+    with Quiet():
+        S._retry_exhausted(slug, kid, 3, "boom", "net")
+    sup = box_last(slug, "boss")
+    assert both in sup["body"] and decoded(sup)["report_name"] == title, sup["body"]
+
+
+check("display name · node refs, org-state snapshot and report notices carry the node's "
+      "title, not its slug id", _title_not_id)
+
+
 def _orphans():
     slug = rig2()
     orphans = [(f"t{i}", f"desc {i}", (f"/out/{i}.txt" if i % 2 else "")) for i in range(23)]
@@ -752,26 +808,6 @@ check("restart notice · body == old literal (dirty, was-pid, branch on the Star
       "line); BuildRef; a later boot supersedes by typed variant", _restart_notice)
 
 
-def old_disk(level, used, total):
-    mb = 1
-    if level == "over":
-        return (f"⚠ The org disk is at {used / mb:.0f} of "
-                f"{total / mb:.0f} MB (past the 90% soft cap). New "
-                f"turns are PAUSED until usage drops under 85% — "
-                f"the remaining space is the reserve that keeps "
-                f"session journaling alive. Delete files (the admin "
-                f"can also use the recovery browser or grow the "
-                f"disk); at 100% every write fails with ENOSPC.")
-    if level == "cleared":
-        return (f"The org disk is back under the soft cap "
-                f"({used / mb:.0f} / {total / mb:.0f} MB) — turns "
-                f"resume.")
-    return (f"Heads-up: the org disk is at {used / mb:.0f} of "
-            f"{total / mb:.0f} MB (past 80%). Clean up or curb "
-            f"file growth — at 90% new turns pause; at 100% "
-            f"writes fail with ENOSPC.")
-
-
 def old_storage(level, used_b, lim_mb):
     if level == "over":
         return (f"⚠ The org is OVER its storage limit "
@@ -796,10 +832,8 @@ def old_storage(level, used_b, lim_mb):
 def _storage():
     slug = rig2()
     o = store.load_org(slug)
-    # every tier × scope renders the old text
+    # every tier renders the old text
     for lvl in ("over", "cleared", "heads_up"):
-        ev = S._storage_ev(o, lvl, "disk", 921.4, 1024.0)
-        assert events.render_agent(ev) == old_disk(lvl, 921.4, 1024.0), lvl
         ev = S._storage_ev(o, lvl, "storage", 460.7 * 1048576 / 1048576, 500.0)
         assert events.render_agent(ev) == old_storage(lvl, 460.7 * 1048576, 500), lvl
     ev = S._storage_ev(o, "cleared", "storage", 3.25, None)
@@ -807,28 +841,9 @@ def _storage():
     assert ev["cap_mb"] is None
     # big integer caps print as ints (the old text used the int)
     assert "/ 1500000 MB" in events.render_agent(S._storage_ev(o, "over", "storage", 1.0, 1500000.0))
-    # integration: the disk check at 95% blocks and notifies every live node, typed
-    from orgtree import disk as dsk
-    orig = dsk.usage
-    dsk.usage = lambda slug_, max_age=5.0: (int(0.95 * 1024 * 1048576), 1024 * 1048576)
-    try:
-        with Quiet():
-            assert S._storage_check_disk(slug, store.load_org(slug)) == "blocked"
-    finally:
-        dsk.usage = orig
-    o = store.load_org(slug)
-    for nid in ("boss", "kid"):
-        row = dict(o.d["notices"][nid][-1])
-        assert row["text"] == old_disk("over", 0.95 * 1024, 1024), row["text"]
-        ev = decoded(row)
-        assert ev["variant"] == "runtime.storage" and ev["level"] == "over"
-        assert ev["scope"] == "disk" and abs(ev["used_mb"] - 0.95 * 1024) < 1e-6
-        assert ev["object"] == {"kind": "org", "org": slug}
-    assert o.d.get("storage_blocked") is True
 
 
-check("storage · six tier/scope texts == old; ∞ cap; int cap; disk check at 95% "
-      "notifies every live node with a typed runtime.storage row", _storage)
+check("storage · tier texts == old; ∞ cap; int cap", _storage)
 
 
 def _token():
@@ -2177,15 +2192,6 @@ def _kickoff_and_renders():
         'Knowledge bearer "kid@0" has exhausted its headroom and is '
         'now a PRESERVING ORACLE — it still answers, but exchanges '
         'are no longer retained by it.')
-    ev = events.mint("lifecycle.disk_migrated", {"kind": "system", "id": SYSTEM}, o.org_ref(),
-                     floored_from="512")
-    assert events.render_agent(ev) == (
-        "Storage migration: this org's 512 MB "
-        "limit was raised to the 4096 MB one-disk minimum "
-        "(system seed + transcripts now count inside the "
-        "cap). Its agents may consume up to 4 GB; the disk "
-        "can be grown online or shrunk (staged) from the "
-        "storage browser.")
     ev = events.mint("lifecycle.switch_dropped", {"kind": "user", "id": USER}, o.node_ref("kid"),
                      node="kid", target="opus", kept="haiku", reason="no seat")
     assert events.render_agent(ev) == (

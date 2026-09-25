@@ -287,9 +287,7 @@ def main():
           "listed as denied",
           lambda: eq((ws6, hooks["orgtree-rights"]["PreToolUse"][0]["matcher"],
                       os.path.isabs(cmd.strip('"')),
-                      cmd.strip('"').endswith(
-                          "orgtree-rights.cmd" if os.name == "nt"
-                          else "orgtree-rights.sh")),
+                      cmd.strip('"').endswith("orgtree-rights.sh")),
                      ({"hooks": True, "denied": sorted(
                          antigravityrun.TOOLS_BASH)}, "*", True, True),
                      "hooks.json"))
@@ -302,7 +300,7 @@ def main():
         out = []
         for name in ("run_command", "view_file"):
             r = subprocess.run(
-                [wrapper] if os.name == "nt" else ["sh", wrapper],
+                ["sh", wrapper],
                 input=json.dumps({"toolCall": {"name": name, "args": {}},
                                   "stepIdx": 1}).encode(),
                 capture_output=True, timeout=30,
@@ -330,7 +328,7 @@ def main():
     def decide(wrapper, name, args=None):
         import subprocess
         r = subprocess.run(
-            [wrapper] if os.name == "nt" else ["sh", wrapper],
+            ["sh", wrapper],
             input=json.dumps({"toolCall": {"name": name,
                                            "args": dict(args or {})},
                               "stepIdx": 1}).encode(),
@@ -403,8 +401,7 @@ def main():
 
     def _attack(cwd):
         victim = os.path.join(cwd, "victim.txt")
-        line = (f'cmd /c echo pwned> "{victim}"' if os.name == "nt"
-                else f'echo pwned > "{victim}"')
+        line = f'echo pwned > "{victim}"'
         return victim, line
 
     def read_only_shell_is_shut():

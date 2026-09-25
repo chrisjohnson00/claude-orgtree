@@ -793,12 +793,8 @@ def native_startup_context_digest(org: Any, nid: str) -> str:
             add(imported, depth + 1)
 
     # Managed policy, then user instructions.
-    if os.name == "nt":
-        add(os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
-                         "ClaudeCode", "CLAUDE.md"))
-    else:
-        add("/etc/claude-code/CLAUDE.md")
-        add("/Library/Application Support/ClaudeCode/CLAUDE.md")
+    add("/etc/claude-code/CLAUDE.md")
+    add("/Library/Application Support/ClaudeCode/CLAUDE.md")
     add(os.path.join(home, ".claude", "CLAUDE.md"))
 
     # Project instructions: root -> cwd, then the project-local .claude
@@ -1149,7 +1145,6 @@ def _warm_eligible(org: Any, nid: str, *, ignore_exclusion: bool = False,
     warm-process fallback semantics. Manual start uses ``ignore_exclusion``
     only to test the seat behind its own persistent stop flag.
     """
-    from . import supervisor as sup                 # noqa: PLC0415
     ok, why = (eligible(org, nid, ignore_exclusion=True)
                if ignore_exclusion else eligible(org, nid))
     if not ok:
@@ -1171,12 +1166,6 @@ def _warm_eligible(org: Any, nid: str, *, ignore_exclusion: bool = False,
         return False, "inflight"
     if (org.d.get("delivering") or {}).get(nid):
         return False, "delivery-in-progress"
-    if org.d.get("storage_blocked") and sup.sbx.on_disk(org.d["slug"]):
-        return False, "storage-blocked"
-    try:
-        sup._deployment_org_gate(org)
-    except RuntimeError:
-        return False, "deployment-gate"
     return True, ""
 
 
@@ -1252,7 +1241,6 @@ def _control_eligibility_text(reason: str) -> str:
         "inflight": "the agent has a turn pending recovery",
         "delivery-in-progress": "the agent has a delivery in progress",
         "storage-blocked": "the organization storage gate is closed",
-        "deployment-gate": "the current deployment profile blocks this org",
         "provider-lane": "this provider lane cannot keep a parked process",
         "sandboxed": "sandboxed process warming is unavailable",
         "preserving-oracle": "preserving oracle processes are not reusable",
@@ -1781,7 +1769,7 @@ def _kill_proc(wp: WarmProcess) -> None:
 
 # kill → reap bound. NOT a readiness timer and not a new one: it is the same
 # bound `codexrun.AppServerClient._kill_tree` already waits on after its own
-# taskkill (codexrun.py:522), for the same reason.
+# killpg, for the same reason.
 _REAP_TIMEOUT_S = 5.0
 
 
@@ -2009,9 +1997,7 @@ def _spawn_for(org: Any, nid: str, why: str) -> WarmProcess | None:
             cwd=sup.scratch_dir(slug, nid), env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8",
-            errors="replace",
-            creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                           if os.name == "nt" else 0))
+            errors="replace")
         try:
             sup._leash(proc)
             sup._mcp_tool_count_begin(

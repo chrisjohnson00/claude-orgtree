@@ -35,7 +35,6 @@ Set before the backend starts. Not visible in the UI, not per-org. A change requ
 
 | variable | default | what it does |
 |---|---|---|
-| `ORGTREE_DEPLOYMENT_PROFILE` | `standard` | install-wide security policy: blank/unset/`standard` preserves ordinary behavior; `frozen` selects the [frozen deployment profile](frozen-deployment.md); surrounding whitespace and case are ignored; any other value raises `DeploymentConfigError` (`deployment.py:current_policy`) |
 | `ORGTREE_DATA` | `~/orgtree` | the data root: org docs, workspaces, scratch, sandboxes (`store.py:26`) |
 | `ORGTREE_USER_CHARTERS` | `<data root>/user/charters` | a user-space directory of charter preset `.md` files, served by `GET /api/charters` alongside the repo's own `docs/charters/` (`api.py:_user_charters_dir`) — lets you add hire-form presets without editing the repo clone; a same-filename user preset replaces the repo preset |
 | `ORGTREE_STORE` | `sqlite` | storage backend: `sqlite` (canonical default) or `json` (deprecated historical format; retained as migration on-ramp and rollback route) (`store.py:111`) |
@@ -91,7 +90,7 @@ Claude tiers.
 | `ORGTREE_TURN_TIMEOUT` | `14400` s | absolute per-message ceiling, re-based at each result event — a backstop, not the bound that normally fires (`supervisor.py`, reshaped 2026-08-04) |
 | `ORGTREE_TURN_IDLE` | `600` s | the idle watchdog: kill only after this long with ZERO CLI stdout events — distinguishes "wedged" from "working" (`supervisor.py`) |
 | `ORGTREE_COMPACT_TIMEOUT` | `600` s | the compaction fork's own bound (`supervisor.py`) — a big context can legitimately need longer |
-| `ORGTREE_COMPACT_AT` | `0.80` | context fraction that triggers compaction (`supervisor.py:144`) |
+| `ORGTREE_COMPACT_AT` | `0.50` | context fraction that triggers compaction (`supervisor.py:144`) |
 | `ORGTREE_ORACLE_AT` | `0.92` | context fraction for the §8.3 state 2→3 transition (`supervisor.py:145`) |
 | `ORGTREE_CONTEXT_WINDOWS` | `{}` | JSON override of per-model context sizes (`supervisor.py:153`) |
 | `ORGTREE_STEER_HOOK` | on | `0` disables the PostToolUse steer hook (`supervisor.py:930,959`) |
@@ -106,13 +105,12 @@ Claude tiers.
 
 | variable | default | what it does |
 |---|---|---|
-| `ORGTREE_SANDBOX_IMAGE` | `orgtree-sandbox` | container image tag (`sandbox.py:52`) |
-| `ORGTREE_SANDBOX_MEM` | `4g` | container memory (`sandbox.py:58`) |
-| `ORGTREE_SANDBOX_CPUS` | `2` | container CPUs (`sandbox.py:59`) |
-| `ORGTREE_SANDBOX_TMP` | `1g` | `/tmp` tmpfs, counts against memory (`sandbox.py:77`) |
-| `ORGTREE_SANDBOX_RUN` | `64m` | `/run` tmpfs (`sandbox.py:78`) |
-| `ORGTREE_SANDBOX_DISK_MB` | `20480` | virtual-disk size when the org does not specify (`sandbox.py:81`) |
-| `ORGTREE_BRIDGE_PORT` | `7362` | the BridgeGateway — the one door out of a container (`sandbox.py:57`) |
+| `ORGTREE_SANDBOX_IMAGE` | `orgtree-sandbox` | container image tag (`sandbox.py:49`) |
+| `ORGTREE_SANDBOX_MEM` | `4g` | container memory (`sandbox.py:55`) |
+| `ORGTREE_SANDBOX_CPUS` | `2` | container CPUs (`sandbox.py:56`) |
+| `ORGTREE_SANDBOX_TMP` | `1g` | `/tmp` tmpfs, counts against memory (`sandbox.py:62`) |
+| `ORGTREE_SANDBOX_RUN` | `64m` | `/run` tmpfs (`sandbox.py:63`) |
+| `ORGTREE_BRIDGE_PORT` | `7362` | the BridgeGateway — the one door out of a container (`sandbox.py:54`) |
 | `ORGTREE_SANDBOX_API_KEY` | — | ⚠ escape hatch: a literal API key instead of the proxied subscription (`sandbox.uses_subscription_auth` / `sandbox.container_auth`) |
 | `ORGTREE_SANDBOX_MCP` | off | EXPERIMENTAL — allow MCP servers inside a sandbox (`supervisor.py:479`) |
 
@@ -131,9 +129,9 @@ in favour of per-org kiosk config; a legacy value is migrated once at startup an
 been the whole credential. Anyone who reaches an exposed port controls every org and can make agents
 run commands on the machine. VPN or SSH tunnel only; for public access use a kiosk instead.
 
-Both deploy scripts keep a convenience switch (`-ExposeAdmin` / `--expose-admin`) that sets the
-variable for that launch. A service definition sets the variable directly and needs no switch —
-which is why it moved here from argv (user ruling 2026-08-04, superseding D-39).
+`update.sh` keeps a convenience switch (`--expose-admin`) that sets the variable for that launch. A
+service definition sets the variable directly and needs no switch — which is why it moved here from
+argv (user ruling 2026-08-04, superseding D-39).
 
 ⚠ It is **stripped from every agent's environment** by `clean_env()` (`supervisor.py:406`): env vars
 are inherited by child processes, and whether the host is reachable off loopback is not an agent's
@@ -158,7 +156,7 @@ Shipped baseline (`api.py:770-774`):
 |---|---|
 | `max_top_grant` | `1000` |
 | `default_top_grant` | `50` |
-| `compact_at` | `0.80` |
+| `compact_at` | `0.50` |
 | `fable_limit_policy` | `halt` |
 | `fable_filter_policy` | `halt` |
 | `cascade_hire` | `true` |
@@ -178,7 +176,7 @@ Editable at any time; takes effect immediately unless noted. Model at `api.py:75
 | `org_dirs` | `[{path, mode}]` | folder holdings. The workspace is permanent. **Additions apply to future hires; removals revoke everywhere; rw→ro downgrades propagate to every existing grant.** |
 | `max_top_grant` | int | ceiling on any single top-level agent's credit grant |
 | `default_top_grant` | int | pre-filled grant when hiring at top level |
-| `compact_at` | int 50–95 (%) | per-org override of the compaction threshold |
+| `compact_at` | int 20–95 (%) | per-org override of the compaction threshold |
 | `fable_limit_policy` | `halt` \| `opus` \| `dissolve` | what happens when the weekly Fable limit is hit |
 | `fable_filter_policy` | `halt` \| `opus` | what happens when a content filter flags a message |
 | `clear_fable_lock` | bool (action) | clears an active Fable lock |
@@ -231,9 +229,8 @@ indistinguishable from "no such org" so the kiosk roster cannot be enumerated.
 
 ### Sandbox on a non-kiosk org
 
-`sandbox: bool` + `disk_mb` (≥ 4096) at creation (`api.py:469-471`), or enabled later. One capped
-ext4 image holds everything persistent; ENOSPC is the enforcement. Soft alert at 90 %, persistent
-alert at 99 %.
+`sandbox: bool` at creation (`OrgCreate` in `api.py`). The org doc stores `sandbox = {enabled,
+secret}`. Sandboxed orgs have no storage cap.
 
 ---
 
@@ -307,7 +304,7 @@ Design record: `docs/mailserver-spec.md` (§12 rulings) + DECISIONS.md D-097/D-0
 ## Browser-local state (not configuration, but it looks like it)
 
 Kept in `localStorage`, per browser, never synced and never in the org doc: inbox-seen watermark
-and card-pile layout per org (`OrgCanvas.tsx:57,88`), disk-browser mode (`DiskBrowser.tsx:52`). A
+and card-pile layout per org (`OrgCanvas.tsx:57,88`). A
 different browser or a cleared profile starts fresh — that is intended, not a bug.
 
 ---

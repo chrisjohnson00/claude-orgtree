@@ -43,7 +43,6 @@ supervisor.chatq_register_org = lambda slug: None
 supervisor.chatq_deregister_org = lambda slug: None
 supervisor.storage_check = lambda slug: None
 sandbox.warm = lambda org: None
-sandbox.vm_disk_cap_mib = lambda: None
 
 PASS = 0
 FAIL: list[tuple[str, str]] = []

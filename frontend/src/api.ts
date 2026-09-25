@@ -6,7 +6,7 @@ import { bumpLive } from './livebus'
 import { backendRestart } from './windowlife'
 import type {
   AudiencesPayload, ChartersPayload, ChatPayload, DefaultsPayload,
-  DiskDeleteResult, DiskDirPayload, DiskPayload, EventsPayload, FsPayload,
+  EventsPayload, FsPayload,
   HireDefaultsRequest, HistoryPayload, HostPayload,
   InboxPayload, KioskCfgRequest, KioskSaveResult, KioskSpecRequest, MailEntry,
   McpServersPayload, OpenRouterDoc, OpenRouterModelsPage, OpenRouterSort,
@@ -15,7 +15,7 @@ import type {
   RuntimeSettingsPayload,
   ScopeRequest, ScratchPayload,
   SendMessageResult,
-  SettingsRequest, SettingsResult, SweepPreview, SweepResult, TreePayload,
+  SettingsRequest, SettingsResult, TreePayload,
   AccountsPayload, AccountUsage, UsageAllPayload,
   UploadResult, UsagePayload, UsagePeek,
   WorkItemsPayload, WorkItemPayload, WorkItemReplyResult, DismissAttentionResult,
@@ -104,10 +104,9 @@ export const listOrgs = (): Promise<OrgListEntry[]> => req('/api/orgs')
 export const createOrg = (
   name: string, dirs: string[],
   kiosk: KioskSpecRequest | null = null, sandbox = false,
-  diskMb: number | null = null,
   netAutoconnect = true, netHubs: string[] = [],
 ): Promise<{ slug: string }> =>
-  // provisions a sandbox and can format a disk image — minutes, legitimately
+  // provisions a sandbox and can build its image — minutes, legitimately
   req<{ slug: string }>('/api/orgs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -117,8 +116,6 @@ export const createOrg = (
       // F-06: mailserver — local-hub opt-out + typed remote addresses
       ...(netAutoconnect ? {} : { net_autoconnect: false }),
       ...(netHubs.length ? { net_hubs: netHubs } : {}),
-      // sandboxed non-kiosk orgs: virtual-disk size (4096 MB minimum)
-      ...(sandbox && !kiosk && diskMb != null ? { disk_mb: diskMb } : {}),
     }),
   }, SLOW_TIMEOUT_MS)
 export const getTree = (slug: string): Promise<TreePayload> =>
@@ -573,46 +570,6 @@ export const saveKiosk = (slug: string, opts: KioskCfgRequest = {}): Promise<Kio
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(opts),
   })
-
-// the org-disk recovery browser (its own surface, deliberately not /api/fs)
-export const getDisk = (slug: string, offset = 0, limit = 200): Promise<DiskPayload> =>
-  req(`/api/orgs/${slug}/disk?offset=${offset}&limit=${limit}`)
-export const diskDelete = (slug: string, paths: string[]): Promise<DiskDeleteResult> =>
-  req(`/api/orgs/${slug}/disk/delete`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ paths }),
-  })
-export interface DiskResizeResult {
-  size_mb: number
-  pending_mb: number | null
-  used?: number | null
-  total?: number | null
-}
-// grow applies online immediately (and clears any pending shrink); a shrink
-// stages a PENDING request applied when the org's container is next down
-export const diskResize = (slug: string, size_mb: number): Promise<DiskResizeResult> =>
-  req(`/api/orgs/${slug}/disk/resize`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ size_mb }),
-  })
-export const diskResizeCancel = (slug: string): Promise<DiskResizeResult> =>
-  req(`/api/orgs/${slug}/disk/resize`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ cancel: true }),
-  })
-export const diskResizeApply = (slug: string): Promise<DiskResizeResult> =>
-  req(`/api/orgs/${slug}/disk/resize/apply`, { method: 'POST' })
-export const getDiskDir = (slug: string, path = ''): Promise<DiskDirPayload> =>
-  req(`/api/orgs/${slug}/disk/dir?path=${encodeURIComponent(path)}`)
-export const getSweepPreview = (slug: string): Promise<SweepPreview> =>
-  req(`/api/orgs/${slug}/sweep-legacy`)
-export const sweepLegacy = (slug: string): Promise<SweepResult> =>
-  req(`/api/orgs/${slug}/sweep-legacy`, { method: 'POST' })
-export const diskFileUrl = (slug: string, path: string): string =>
-  u(`/api/orgs/${slug}/disk/file?path=${encodeURIComponent(path)}`)
 
 export function openWs(
   slug: string,

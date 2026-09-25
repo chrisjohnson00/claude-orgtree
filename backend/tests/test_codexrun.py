@@ -283,11 +283,6 @@ def main():
         child_pid = int(open(pidfile, encoding="utf-8").read().strip())
 
         def alive(p):
-            if os.name == "nt":
-                r = __import__("subprocess").run(
-                    ["tasklist", "/FI", f"PID eq {p}"],
-                    capture_output=True, text=True)
-                return str(p) in r.stdout
             try:
                 os.kill(p, 0)
                 return True
@@ -304,15 +299,12 @@ def main():
             time.sleep(0.1)
         if not gone:
             try:
-                (os.kill(child_pid, 9) if os.name != "nt"
-                 else __import__("subprocess").run(
-                     ["taskkill", "/F", "/PID", str(child_pid)],
-                     capture_output=True))
+                os.kill(child_pid, 9)
             except OSError:
                 pass
         eq(gone, True, "close() left NO orphan (parent-only kill would)")
 
-    check("close() taskkills the tree and waits — no orphan holds the lock",
+    check("close() killpg's the tree and waits — no orphan holds the lock",
           tree_teardown)
 
     print(f"\n{PASS} checks passed")

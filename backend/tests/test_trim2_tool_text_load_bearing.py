@@ -25,12 +25,8 @@ writing a single marker:
     injected into every turn via identity_prompt and pinned separately by
     POLICY_PHRASES in that same file) — safe to shrink hard, AS LONG AS the
     two already-pinned substrings survive. Not re-pinned here.
-  - test_watchdog_visibility.py §6 pins "cmd.exe", "findstr", "smoke",
-    "checks_run", "NOT IN YOUR SHELL" against `description + str(inputSchema)`
-    combined — which means orgtree_watchdog's `target` schema field (the one
-    that actually carries _WD_SHELL_WARNING) is already covered by that blob
-    check. Not re-pinned here. The rest of watchdog's schema (`once`,
-    `notice`, `shell`) restates content the (A2-preserved) top-level
+  - orgtree_watchdog's schema (`target`, which carries _WD_SHELL_WARNING,
+    `once`, `notice`, `shell`) restates content the (A2-preserved) top-level
     description already carries in full — internal duplication, not pinned,
     flagged as safe-to-shrink in the classification notes instead.
   - test_hire_schema_contract.py pins: `add_dirs`/`tools`/`org_visibility`

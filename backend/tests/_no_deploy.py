@@ -134,7 +134,15 @@ def installed() -> bool:
 # by, so this makes it a check with teeth: it reads `store.DATA_ROOT` — the
 # value the code ACTUALLY resolved, not the env var someone believes they set
 # — and refuses to let the suite continue if it is the live root.
-_LIVE_ROOT = os.path.realpath(os.path.expanduser("~/orgtree"))
+#
+# `tools/run_tests.py` gives every suite a throwaway HOME, so `~` alone no
+# longer names the operator's install; it exports the real one as
+# ORGTREE_TEST_REAL_HOME, and both are refused.
+_LIVE_ROOTS = tuple(dict.fromkeys(
+    os.path.realpath(os.path.join(home, "orgtree"))
+    for home in (os.path.expanduser("~"),
+                 os.environ.get("ORGTREE_TEST_REAL_HOME"))
+    if home))
 
 
 def assert_isolated_data_root() -> None:
@@ -150,10 +158,12 @@ def assert_isolated_data_root() -> None:
     checks is false."""
     from orgtree import store                                # noqa: PLC0415
     root = os.path.realpath(store.DATA_ROOT)
-    if root == _LIVE_ROOT or root.startswith(_LIVE_ROOT + os.sep):
+    live = next((r for r in _LIVE_ROOTS
+                 if root == r or root.startswith(r + os.sep)), None)
+    if live:
         raise SystemExit(
             f"☠ REFUSING TO RUN: store.DATA_ROOT resolved to {root!r}, which "
-            f"is the machine's LIVE data root ({_LIVE_ROOT!r}). This suite "
+            f"is the machine's LIVE data root ({live!r}). This suite "
             f"reaches the ledger and the watchdog engine — running it here "
             f"would arm and fire production watchdogs, write into real "
             f"agents' mailboxes and wake real (billed) turns. Set "

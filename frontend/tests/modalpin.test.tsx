@@ -159,12 +159,12 @@ test('§1 the store: pin, raise, unpin, the z band, and what garbage reads as', 
     { usage: 1, docket: 0 }, 'raising renormalises: the raised one is last')
 
   // the band is HARD-clamped — 50 pinned windows must never reach the modal
-  // layer (20) from below or climb past the disk browser (55) above
+  // layer (20) from below or climb past the folder picker (60) above
   assert.equal(modalZIndex(0), MODAL_Z_BASE)
   assert.equal(modalZIndex(-5), MODAL_Z_BASE, 'a negative ordinal cannot sink under the band')
   assert.equal(modalZIndex(999), MODAL_Z_TOP)
-  assert.ok(MODAL_Z_BASE > 20 && MODAL_Z_TOP < 55,
-    'the band sits above centred overlays and below the disk browser')
+  assert.ok(MODAL_Z_BASE > 20 && MODAL_Z_TOP < 60,
+    'the band sits above centred overlays and below the folder picker')
 
   // pinning something already pinned is a no-op, not a duplicate or a move
   pinModal('usage', { x: 999, y: 999, w: 400, h: 400 })
@@ -478,8 +478,8 @@ test('§7 two readers open at once are two windows, not one', async () => {
 // Pinned, a panel's own title <h3> is hidden — the window's title bar says the
 // same words. So anything that was ALSO living in that h3 and is not a title
 // would have vanished with it: the default settings' scope line, the watchdog's
-// live state and one-shot label, the agent config's process lifecycle mark, the
-// disk browser's mode tabs and close button. Astra 2026-09-06 required those to
+// live state and one-shot label, and the agent config's process lifecycle
+// mark. Astra 2026-09-06 required those to
 // stay visible in BOTH modes, so they moved out of the heading.
 //
 // ⚠ WHAT THIS CHECK IS AND IS NOT. jsdom applies no stylesheet, so it cannot

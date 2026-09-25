@@ -86,7 +86,7 @@ export function ContextWheel({ occ, cw, onCompact, compactAt, est,
   // №19: the red ring means "about to split" — the ORG'S configured
   // threshold, not a literal 0.8 (an org set to 50% got a ring that turned
   // red 30 points after its agents had already forked)
-  const hot = knownWindow && knownOccupancy && frac >= (compactAt || 0.8)
+  const hot = knownWindow && knownOccupancy && frac >= (compactAt || 0.5)
   const R = 5.5, C = 2 * Math.PI * R
   const contextTitle = !knownWindow
     ? 'context: unavailable — context-window size not reported'
@@ -95,7 +95,7 @@ export function ContextWheel({ occ, cw, onCompact, compactAt, est,
       : `context: ${est ? '≈' : ''}${Math.round(used / 1000)}k / ${Math.round(cw / 1000)}k (${Math.round(frac * 100)}%)`
         + (used === 0 ? ' — empty session' : '')
         + (est ? ' — estimated after compaction, until its next turn' : '')
-        + ` — auto-compacts at ${Math.round((compactAt || 0.8) * 100)}%`
+        + ` — auto-compacts at ${Math.round((compactAt || 0.5) * 100)}%`
         + (onCompact ? ' — click to compact now' : '')
   const svg = (
     <svg className={'ctxwheel' + (est && knownOccupancy ? ' est' : '')}

@@ -85,26 +85,20 @@ def get_boot_build_info() -> dict[str, Any]:
         try:
             r = subprocess.run(["git", "rev-parse", "HEAD"],
                                cwd=sbx.REPO_ROOT, capture_output=True,
-                               text=True, timeout=10,
-                               creationflags=(subprocess.CREATE_NO_WINDOW
-                                              if os.name == "nt" else 0))
+                               text=True, timeout=10)
             if r.returncode == 0 and r.stdout.strip():
                 commit = r.stdout.strip()
                 commit_short = commit[:7]
             b = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
                                cwd=sbx.REPO_ROOT, capture_output=True,
-                               text=True, timeout=10,
-                               creationflags=(subprocess.CREATE_NO_WINDOW
-                                              if os.name == "nt" else 0))
+                               text=True, timeout=10)
             if b.returncode == 0:
                 name = b.stdout.strip()
                 if name and name not in ("HEAD", "main"):
                     branch = name
             d = subprocess.run(["git", "status", "--porcelain", "-uno"],
                                cwd=sbx.REPO_ROOT, capture_output=True,
-                               text=True, timeout=10,
-                               creationflags=(subprocess.CREATE_NO_WINDOW
-                                              if os.name == "nt" else 0))
+                               text=True, timeout=10)
             if d.returncode == 0 and d.stdout.strip():
                 dirty = True
         except (OSError, subprocess.TimeoutExpired):

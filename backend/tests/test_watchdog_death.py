@@ -40,7 +40,7 @@ WHAT EACH KIND CAN HONESTLY KNOW  (§3 file · §5 command · §6 process · §7
   file     NOTHING about death. A path does not know what writes it, so a dead
            producer and a quiet one are the same observation. Reported as
            STALENESS, in those words, and the dog is left ARMED. §3.
-  command  Not "the command failed" — a `findstr` waiting for a string exits 1
+  command  Not "the command failed" — a `grep` waiting for a string exits 1
            on every check and that is HEALTHY. Only "the check could not be
            performed at all". Paused, not removed. §5.
   process  Already correct: a dead subject IS the event. §6 proves it, and
@@ -95,7 +95,6 @@ print(f"testing orgtree at: {_GOT}")
 
 PASS = 0
 FAIL: list[str] = []
-WIN = os.name == "nt"
 
 
 def check(label, fn):
@@ -534,12 +533,12 @@ check("§4 …and the same fixture DOES report a subject that went silent "
 print("\n§5 · COMMAND DOGS — 'cannot run at all', not 'returned non-zero'")
 
 
-def _a_waiting_findstr_is_healthy_not_broken():
-    """The control that decides whether this is safe to ship. `findstr` that
+def _a_waiting_grep_is_healthy_not_broken():
+    """The control that decides whether this is safe to ship. `grep` that
     matches nothing exits 1 EVERY time — that is a working dog waiting, and
     treating a non-zero exit as failure would pause every healthy command dog
     on the machine."""
-    waiting = dog(kind="command", target="findstr /C:\"X\" y.log",
+    waiting = dog(kind="command", target="grep X y.log",
                   pattern="X", last_exit=1,
                   last_output="", high_water={"quiet": 0,
                                               "alive_at": aged(5)})
@@ -566,9 +565,9 @@ def _one_bad_check_is_not_a_streak():
             f"transient must not disarm an instrument: {d!r}")
 
 
-check("§5 a `findstr` exiting 1 while it waits is HEALTHY; a target the shell "
+check("§5 a `grep` exiting 1 while it waits is HEALTHY; a target the shell "
       "cannot run at all is BROKEN and paused (control pair)",
-      _a_waiting_findstr_is_healthy_not_broken)
+      _a_waiting_grep_is_healthy_not_broken)
 check("§5 …and it takes a STREAK, so one transient failure disarms nothing",
       _one_bad_check_is_not_a_streak)
 
@@ -589,14 +588,12 @@ def _the_broken_streak_is_really_counted_by_the_engine():
                tools={"bash": True, "web": False, "edit": False,
                       "subagents": False, "mcp": []},
                org_visibility="team", charter="cmd fixture")
-        # the idiom that cannot run under the service PATH on Windows
+        # a target that cannot run under an empty PATH
         wid = o.watchdog_create("k", "bad", "command",
                                 "cat nothing | grep X", "X", 15)["id"]
         store.save_org(o)
         supervisor._wd_cmd_pool = ThreadPoolExecutor(max_workers=2)
-        if WIN:
-            os.environ["PATH"] = os.path.join(
-                os.environ.get("SystemRoot", r"C:\Windows"), "system32")
+        os.environ["PATH"] = "/nonexistent"
         for _ in range(supervisor._WD_BROKEN_STREAK + 1):
             o3 = store.load_org(slug)
             o3._watchdog(wid)["_last_check_ts"] = 0
@@ -609,8 +606,6 @@ def _the_broken_streak_is_really_counted_by_the_engine():
                 time.sleep(0.2)
             time.sleep(0.3)
         w = store.load_org(slug)._watchdog(wid)
-        if not WIN:
-            return                       # `cat|grep` runs fine on POSIX
         assert int((w.get("high_water") or {}).get("broken") or 0) >= \
             supervisor._WD_BROKEN_STREAK, (
             "the engine never counted the broken checks, so the detector "
@@ -623,7 +618,7 @@ def _the_broken_streak_is_really_counted_by_the_engine():
         assert box and "could not be run" in box[-1]["body"].lower(), (
             f"the dog was paused and NOBODY WAS TOLD — that turns a wait "
             f"into a permanent AND invisible one: {box!r}")
-        assert "not recognized" in box[-1]["body"].lower(), (
+        assert "not found" in box[-1]["body"].lower(), (
             "the alert does not carry what the shell actually said, which is "
             f"the only thing that tells the owner how to fix it: {box[-1]!r}")
     finally:
@@ -795,7 +790,7 @@ print("\n§8 · WHOSE PROCESS TREE A DOG'S CHILD IS IN")
 # detached and running in an execution context divorced from the turn that
 # spawned them". The answer is that they already are — the engine is a daemon
 # thread in the BACKEND, so a dog's child is the backend's child and not the
-# arming turn's. What was NOT true is that killing one killed what it started.
+# arming turn's.
 
 
 def _children_belong_to_the_spawning_backend_not_to_a_cli():
@@ -805,96 +800,32 @@ def _children_belong_to_the_spawning_backend_not_to_a_cli():
     # already exited before the query ran, so the lookup returned "" and the
     # check reported the wrong tree rather than no tree. An instrument must be
     # able to see its subject before its answer means anything.
-    proc = supervisor._wd_popen(_O(), "k", "ping -n 100000 127.0.0.33")  # type: ignore[arg-type]
+    proc = supervisor._wd_popen(_O(), "k", "sleep 100000")  # type: ignore[arg-type]
     try:
         # the only structural fact a test can assert here, and it is the one
         # that matters: the child is OURS. In production this code runs on the
         # backend's watchdog thread, so "ours" is the backend — not the CLI of
         # whichever turn armed the dog, which is a different process that the
         # harness kills at every turn boundary.
-        if WIN:
-            out = subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 f"(Get-CimInstance Win32_Process -Filter "
-                 f"'ProcessId={proc.pid}').ParentProcessId"],
-                capture_output=True, text=True, timeout=60).stdout.strip()
-            assert out, (
+        try:
+            with open(f"/proc/{proc.pid}/stat", encoding="utf-8") as f:
+                stat = f.read()
+        except OSError:
+            raise AssertionError(
                 f"the watchdog child {proc.pid} was already gone when the "
-                f"tree was queried — this check measured nothing")
-            assert out == str(os.getpid()), (
-                f"a watchdog child's parent is {out!r}, not the process that "
-                f"spawned it ({os.getpid()}) — it is in somebody else's tree")
+                f"tree was queried — this check measured nothing") from None
+        # field 4 is the ppid; split after the ")" that closes the comm field
+        ppid = stat.rsplit(")", 1)[1].split()[1]
+        assert ppid == str(os.getpid()), (
+            f"a watchdog child's parent is {ppid!r}, not the process that "
+            f"spawned it ({os.getpid()}) — it is in somebody else's tree")
     finally:
         supervisor._wd_kill_tree(proc)
-
-
-def _killing_the_shell_is_not_enough_but_kill_tree_is():
-    """☠ THE MEASURED BUG. `_wd_popen` runs the target through `cmd.exe /c`,
-    so `proc.kill()` kills the SHELL and leaves the target running. Found on
-    the live box: a create-time smoke run of `ping -n 100000` was killed after
-    its 8s timeout and the PING was still going afterwards, orphaned, good for
-    another 27 hours — one leaked per create.
-
-    The negative control comes FIRST and must show the leak, or the positive
-    half proves nothing about `_wd_kill_tree`."""
-    if not WIN:
-        return                      # the grandchild shape is the cmd.exe one
-
-    class _O:
-        d = {"slug": "zz-wdtree", "key": None}
-
-    def grandchildren(marker):
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "@(Get-CimInstance Win32_Process -Filter \"Name='PING.EXE'\" | "
-             f"Where-Object {{ $_.CommandLine -like '*{marker}*' }}).Count"],
-            capture_output=True, text=True, timeout=60).stdout.strip()
-        return int(out or 0)
-
-    # ① NEGATIVE CONTROL — the old kill, and the leak it leaves
-    leak_ip, tree_ip = "127.0.0.31", "127.0.0.32"
-    a = supervisor._wd_popen(_O(), "k", f"ping -n 100000 {leak_ip}")  # type: ignore[arg-type]
-    b = supervisor._wd_popen(_O(), "k", f"ping -n 100000 {tree_ip}")  # type: ignore[arg-type]
-    try:
-        deadline = time.time() + 30
-        while time.time() < deadline and not (grandchildren(leak_ip)
-                                              and grandchildren(tree_ip)):
-            time.sleep(0.5)
-        assert grandchildren(leak_ip) and grandchildren(tree_ip), \
-            "neither target ever started — this check measured nothing"
-        a.kill()                       # the old behaviour, exactly
-        a.wait(timeout=10)
-        time.sleep(2)
-        assert grandchildren(leak_ip) >= 1, (
-            "killing the shell already killed the target, so the bug this "
-            "fixes does not exist on this machine and the check below is "
-            "vacuous")
-        # ② and the fix
-        supervisor._wd_kill_tree(b)
-        deadline = time.time() + 20
-        while time.time() < deadline and grandchildren(tree_ip):
-            time.sleep(0.5)
-        assert grandchildren(tree_ip) == 0, (
-            "_wd_kill_tree left the target running — every smoke run of a "
-            "long-lived target still leaks a process")
-    finally:
-        for ip, p in ((leak_ip, a), (tree_ip, b)):
-            supervisor._wd_kill_tree(p)
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 "Get-CimInstance Win32_Process -Filter \"Name='PING.EXE'\" | "
-                 f"Where-Object {{ $_.CommandLine -like '*{ip}*' }} | "
-                 "ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
-                 "-ErrorAction SilentlyContinue }"],
-                capture_output=True, text=True, timeout=60)
 
 
 check("§8 a watchdog child is a child of the process that spawned it — the "
       "backend, never the arming turn's CLI",
       _children_belong_to_the_spawning_backend_not_to_a_cli)
-check("§8 killing the shell LEAVES the target running (the measured leak); "
-      "_wd_kill_tree does not (control pair)",
-      _killing_the_shell_is_not_enough_but_kill_tree_is)
 
 
 # ---------------------------------------------------------------------------

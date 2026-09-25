@@ -736,8 +736,8 @@ def thresholds() -> None:
     supervisor._compact_split = spy                        # type: ignore[assignment]
     try:
         cw = supervisor.TIER_CONTEXT["haiku"]
-        for frac, want in ((0.10, False), (0.79, False), (0.80, True),
-                           (0.81, True), (0.999, True)):
+        for frac, want in ((0.10, False), (0.49, False), (0.50, True),
+                           (0.51, True), (0.999, True)):
             org, (a,) = horg()
             store.save_org(org)
             calls.clear()
@@ -749,12 +749,26 @@ def thresholds() -> None:
 
         # the per-org override, in org-doc FRACTION units
         org, (a,) = horg()
-        org.d["compact_at"] = 0.50
+        org.d["compact_at"] = 0.30
         store.save_org(org)
         calls.clear()
         supervisor._state.pop((org.d["slug"], a), None)
-        run_after(org, a, int(cw * 0.55))
+        run_after(org, a, int(cw * 0.35))
         check("threshold · the per-org compact_at overrides the env default",
+              lambda: _true(bool(calls)))
+
+        # the documented minimum (20%)
+        org, (a,) = horg()
+        org.d["compact_at"] = 0.20
+        store.save_org(org)
+        calls.clear()
+        supervisor._state.pop((org.d["slug"], a), None)
+        run_after(org, a, int(cw * 0.15))
+        check("threshold · a 20% compact_at does not split below 20%",
+              lambda: _eq(calls, []))
+        calls.clear()
+        run_after(org, a, int(cw * 0.25))
+        check("threshold · a 20% compact_at (the documented minimum) is honoured",
               lambda: _true(bool(calls)))
 
         # the hard cap
@@ -2102,160 +2116,6 @@ def occupancy_reporting() -> None:
                         f"cost_usd={n38.get('cost_usd')!r}"))
 
 
-#: twenty notice KINDS — distinguished by a word, because a NUMBER is
-#: deliberately not a kind (`_notice_shape` blanks digits, so "notice 1" and
-#: "notice 2" are one kind and would test nothing here)
-KINDS20 = ("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda "
-           "mu nu xi omicron pi rho sigma tau upsilon").split()
-
-
-def notice_digest() -> None:
-    """The notice box is keyed by SEAT; cheap_compact and reseed replace the
-    SESSION. So the successor's first turn used to open with the whole
-    undelivered backlog of a predecessor it has no memory of — measured on the
-    live resonite org 2026-08-20: 22 notices, 7,082 chars, three days, 11 of
-    them the same "direct instruction to X" line about a since-retired report.
-
-    The ruling is DIGEST, not drop: same-kind repeats collapse to their
-    newest, carrying the count; distinct kinds survive; nothing is destroyed
-    (`notice_log` is untouched and /history renders it)."""
-    print("\ncheap-compact/reseed · the predecessor's notice backlog:")
-
-    def box(org: Org, nid: str) -> list:
-        return (org.d.get("notices") or {}).get(nid) or []
-
-    # ---- the shape key: what makes two notices "the same kind"
-    same = ('The user gave a direct instruction to "angvel", inside your '
-            'chain: "ok i made some changes" - it carries the USER authority.')
-    other = ('The user gave a direct instruction to "ingame-prompt", inside '
-             'your chain: "do the thing" - it carries the USER authority.')
-    check("shape · the quoted node id and the quoted gist do not make a kind",
-          lambda: _eq(ledger._notice_shape(same), ledger._notice_shape(other)))
-    check("shape · …but a different SENTENCE is a different kind",
-          lambda: _true(ledger._notice_shape(same)
-                        != ledger._notice_shape('Your report "angvel" was '
-                                                'retired by the user (freed '
-                                                '10 credits).')))
-    check("shape · a credit count is not a kind either",
-          lambda: _eq(ledger._notice_shape('Your report "a" was retired by '
-                                           'the user (freed 10 credits).'),
-                      ledger._notice_shape('Your report "b" was retired by '
-                                           'the user (freed 5 credits).')))
-
-    # ---- the fold itself
-    org, (a,) = horg(grant=20)
-    _plant_transcript(sid_of(org, a))
-    for i in range(9):
-        org._notify([a], f'The user gave a direct instruction to "kid{i}", '
-                         f'inside your chain: "msg {i}" - it carries the '
-                         f'USER authority. Re-check any plan of yours.')
-    for i in range(3):
-        org._notify([a], f'Your report "kid{i}" was retired by the user '
-                         f'(freed {i + 1} credits).')
-    org._notify([a], "You have been renamed.")
-    before = len(box(org, a))
-    log_before = len(org.d.get("notice_log") or [])
-    check("fold · the backlog is 13 notices of 3 kinds before the compact",
-          lambda: _eq(before, 13))
-    org.cheap_compact(USER, a)
-    b0 = box(org, a)
-    # 1 digest header + 3 kinds + cheap_compact's own "you were CHEAP-COMPACTED"
-    check("fold · …and 5 lines after it (header + one per kind + the notice "
-          "the compact itself queues)",
-          lambda: _eq(len(b0), 5))
-    check("fold · the header states what was folded and where the rest lives",
-          lambda: _true("13 notices" in b0[0]["text"]
-                        and "History tab" in b0[0]["text"], b0[0]["text"]))
-    check("fold · the collapsed kind carries its count",
-          lambda: _true(any("[+8 earlier notice(s) of this same kind"
-                            in e["text"] for e in b0),
-                        " || ".join(e["text"][-70:] for e in b0)))
-    check("fold · the exemplar kept is the NEWEST of its kind",
-          lambda: _true(any('"kid8"' in e["text"].split(" [+")[0]
-                            and '"kid7"' not in e["text"].split(" [+")[0]
-                            for e in b0)))
-    check("fold · …and the fold recites WHICH other nodes it swallowed, so "
-          "a count never hides a name",
-          lambda: _true(any(all(f'"kid{i}"' in e["text"] for i in range(9))
-                            for e in b0),
-                        " || ".join(e["text"][-160:] for e in b0)))
-    check("fold · a kind that occurred ONCE survives verbatim",
-          lambda: _true(any(e["text"] == "You have been renamed."
-                            for e in b0)))
-    check("fold · nothing is destroyed — every folded notice is still in "
-          "notice_log verbatim, which is what /history renders",
-          lambda: _eq(len([e for e in (org.d.get("notice_log") or [])
-                           if e["node"] == a
-                           and "direct instruction" in e["text"]]), 9))
-    check("fold · …and the synthetic digest header is NOT logged as history "
-          "(it is chrome about the fold, not an org change)",
-          lambda: _eq(len(org.d.get("notice_log") or []) - log_before, 1))
-    check("fold · the op records how many notices it folded",
-          lambda: _eq([e for e in org.d["events"]
-                       if e["op"] == "cheap_compact"][-1]["detail"]
-                      ["notices_folded"], 10))
-
-    # ---- what it must NOT do
-    org2, (b,) = horg(grant=20)
-    _plant_transcript(sid_of(org2, b))
-    for w in ("alpha", "beta", "gamma", "delta"):
-        org2._notify([b], f"A {w} thing happened to you.")
-    org2.cheap_compact(USER, b)
-    check("fold · four notices of four kinds are left verbatim (no header, "
-          "no loss) — a digest that shortens nothing is not applied",
-          lambda: _eq(len(box(org2, b)), 5))       # 4 + the compact's own
-    check("fold · …and none of them grew a fold marker",
-          lambda: _true(not any("folded" in e["text"]
-                                for e in box(org2, b)[:4])))
-
-    org3, (c,) = horg(grant=20)
-    _plant_transcript(sid_of(org3, c))
-    org3._notify([c], "One lonely notice.")
-    org3.cheap_compact(USER, c)
-    check("fold · a backlog under three is never touched",
-          lambda: _eq(box(org3, c)[0]["text"], "One lonely notice."))
-
-    # ---- reseed folds too; compact_split deliberately does NOT
-    org4, (d4,) = horg(grant=20)
-    _plant_transcript(sid_of(org4, d4))
-    for i in range(6):
-        org4._notify([d4], f'Your report "kid{i}" was retired by the user '
-                           f'(freed {i} credits).')
-    org4.mark_unrecoverable(d4, "test")
-    org4.reseed(USER, d4, "reseeded-sid-digest")
-    check("fold · reseed digests the same way (its successor is as memoryless)",
-          lambda: _true(any("6 notices" in e["text"]
-                            for e in box(org4, d4)), box(org4, d4)))
-
-    org5, (e5,) = horg(grant=20)
-    _plant_transcript(sid_of(org5, e5))
-    for i in range(6):
-        org5._notify([e5], f'Your report "kid{i}" was retired by the user '
-                           f'(freed {i} credits).')
-    org5.compact_split(e5, "split-sid-digest")
-    check("fold · a NORMAL compaction does not digest — its successor carries "
-          "the CLI's summary, so the diff still lands on a baseline",
-          lambda: _eq(len([e for e in box(org5, e5)
-                           if "retired by the user" in e["text"]]), 6))
-
-    # ---- the kind cap is declared, never silent
-    org6, (f6,) = horg(grant=20)
-    _plant_transcript(sid_of(org6, f6))
-    for w in KINDS20:
-        org6._notify([f6], f"A {w} thing happened to you.")
-        org6._notify([f6], f"A {w} thing happened to you.")
-    org6.cheap_compact(USER, f6)
-    b6 = box(org6, f6)
-    check("fold · past the kind cap the block is capped at 15 kinds",
-          lambda: _eq(len(b6), 17))     # header + 15 + the compact's own
-    check("fold · …and the header SAYS how many kinds it dropped",
-          lambda: _true("5 oldest kind(s) dropped" in b6[0]["text"],
-                        b6[0]["text"]))
-    check("fold · …keeping the NEWEST kinds",
-          lambda: _true(any(KINDS20[-1] in e["text"] for e in b6)
-                        and not any(KINDS20[0] in e["text"] for e in b6)))
-
-
 def _plant_transcript(sid: str, home: str = HOME) -> str:
     d = os.path.join(home, ".claude", "projects", "rig")
     os.makedirs(d, exist_ok=True)
@@ -2322,7 +2182,9 @@ def account_switch_compaction() -> None:
     check("switch · an unobserved account remains uncertain and never compacts",
           lambda: _eq(ready(_sw_node(occ=60_000), cfg,
                             {"state": "uncertain"}), False))
-    _src = re.sub(r"\s+", "", inspect.getsource(supervisor._run_one_turn))
+    # _run_one_turn is now a thin wrapper; the pinned body lives in
+    # _run_one_turn_recorded.
+    _src = re.sub(r"\s+", "", inspect.getsource(supervisor._run_one_turn_recorded))
     check("switch · forecast and Claude launch reuse one resolved spawn env",
           lambda: _true("cache_pre_env=spawn_env(" in _src
                         and "env=cache_pre_envorspawn_env(" in _src))
@@ -2336,6 +2198,7 @@ def predicates() -> None:
     for raw, want, why in [
         (0.80, 0.80, "the ordinary case"),
         (0.5, 0.5, "an aggressive per-org setting"),
+        (0.2, 0.2, "the documented minimum"),
         (0.95, 0.95, "the documented maximum"),
         (0.99, 0.95, "over the maximum is capped, not honoured"),
         (1.0, 0.95, "a full context is still capped"),
@@ -5812,7 +5675,6 @@ def main() -> None:
     account_switch_compaction()
     predicates()
     lost_generations()
-    notice_digest()
     cross_process()
     aging()
 

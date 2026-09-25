@@ -15,15 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-import ipaddress
 import json
 import math
 import os
-import posixpath
 import re
 import secrets
 import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -70,16 +67,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
+from starlette.convertors import Convertor, register_url_convertor
 
 from . import crashreports
 from . import events
 from . import refs
-from . import deployment
-from . import frozen_install
 from . import workitems
 from . import opreceipts
 from . import ledger as ledger_mod
-from . import (accounts, antigravity_limits, appsettings, bridgeauth,
+from . import (accounts, antigravity_limits, appsettings,
                codex_limits, codex_route, limits, net,
                providers, restart_wake, sandbox, store, subproxy, supervisor, warmpool)
 from .ledger import LedgerError, Org, USER, VIS_LEVELS, actor_of, norm_dirs, norm_tools
@@ -114,7 +110,7 @@ class InstanceStamp:
 
     Pure ASGI rather than `@app.middleware("http")`: Starlette's
     BaseHTTPMiddleware re-wraps the response body in its own StreamingResponse,
-    and this sits in front of multi-GB virtual-disk downloads. Rewriting one
+    and this sits in front of multi-GB file downloads. Rewriting one
     header on the `http.response.start` message touches nothing else."""
 
     def __init__(self, inner: ASGIApp) -> None:
@@ -139,46 +135,6 @@ class InstanceStamp:
                                   *([(b"cache-control", b"no-store")] if api else [])]
             await send(msg)
         await self.inner(scope, receive, _send)
-
-
-class FrozenAdminBoundary:
-    """Keep the bare ASGI admin app loopback-only in frozen mode.
-
-    The supported launcher also binds the admin listener to loopback. This
-    request boundary prevents a direct/custom ASGI server from turning a
-    non-loopback bind into an unauthenticated admin surface. Authenticated
-    bridge traffic is marked by ``BridgeGateway`` before it reaches the app.
-    """
-
-    def __init__(self, inner: ASGIApp) -> None:
-        self.inner = inner
-
-    async def __call__(self, scope: ASGIScope, receive: Receive,
-                       send: Send) -> None:
-        if scope["type"] not in ("http", "websocket") \
-                or deployment.current_policy().allow_admin_exposure \
-                or (scope.get("state") or {}).get("bridge_slug"):
-            return await self.inner(scope, receive, send)
-
-        client = scope.get("client")
-        host = str(client[0]).split("%", 1)[0] if client else ""
-        try:
-            loopback = ipaddress.ip_address(host).is_loopback
-        except ValueError:
-            loopback = False
-        if loopback:
-            return await self.inner(scope, receive, send)
-        if scope["type"] == "websocket":
-            await send({"type": "websocket.close", "code": 4403})
-            return
-        body = json.dumps({
-            "detail": "the frozen deployment profile exposes the admin API "
-                      "to loopback clients only",
-        }).encode()
-        await send({"type": "http.response.start", "status": 403,
-                    "headers": [(b"content-type", b"application/json"),
-                                (b"content-length", str(len(body)).encode())]})
-        await send({"type": "http.response.body", "body": body})
 
 
 # ── the access record (D-239) ────────────────────────────────────────────────
@@ -207,16 +163,13 @@ class FrozenAdminBoundary:
 # Not only because `/api/orgs/{slug}/nodes/{nid}/chat` aggregates and
 # `/api/orgs/orgtree/nodes/perf-latency/chat?last=120` does not — but because
 # this middleware sits on `app`, and the BRIDGE listener wraps that same
-# object. Its uvicorn access log is deliberately suppressed in frozen mode
-# (see `bridge_log` in `main`) because THE ORG CREDENTIAL RIDES IN THE URL:
-# the frozen CLI cannot attach a private header. Logging concrete paths here
-# would have quietly re-opened exactly that hole from a different file. A
-# template carries no parameter values, so this is safe by construction on
-# every listener rather than by a policy check someone can forget.
+# object. THE ORG SECRET RIDES IN THE `/anthropic/<secret>/…` URL because the
+# CLI cannot attach a private header, so logging concrete paths here would
+# write it to the log. A template carries no parameter values, so this is
+# safe by construction on every listener rather than by a check someone can
+# forget.
 #
-# This ADDS a line rather than replacing uvicorn's. Suppressing uvicorn's
-# access log per listener is a security-reviewed decision in `main` (the
-# bridge case above) and not worth reopening for log volume.
+# This ADDS a line rather than replacing uvicorn's.
 
 _access_inflight = 0          # HTTP requests currently inside the app
 _SLOW_MS = 500.0              # a handler this slow is worth a line of its own
@@ -229,12 +182,12 @@ class AccessRecord:
     """One line per HTTP request: duration, bytes, route template, in-flight.
 
     Pure ASGI for the reason `InstanceStamp` gives (BaseHTTPMiddleware re-wraps
-    the body, and this sits in front of multi-GB disk downloads); the only work
+    the body, and this sits in front of multi-GB file downloads); the only work
     per body chunk is one integer add.
 
     ⚠ TWO DURATIONS, AND THE THRESHOLD USES THE FIRST. `handler` is time to
     `http.response.start` — the part this codebase can fix. `total` includes
-    shipping the body, which for a virtual-disk download is physics, not a
+    shipping the body, which for a large download is physics, not a
     defect. Warning on `total` would fill the log with alarms about large
     files working correctly, and that is how a threshold gets ignored.
 
@@ -348,9 +301,8 @@ def _access_emit(scope: ASGIScope, status: int, handler_ms: float,
 # on the APP, so all three listeners (admin, kiosk, bridge) inherit it — they
 # are gateways wrapped around this same object
 app.add_middleware(InstanceStamp)
-app.add_middleware(FrozenAdminBoundary)
-# LAST, therefore OUTERMOST: it must time the whole stack, including
-# `FrozenAdminBoundary`'s own rejections, or it is measuring a subset again.
+# LAST, therefore OUTERMOST: it must time the whole stack, or it is
+# measuring a subset again.
 app.add_middleware(AccessRecord)
 
 
@@ -518,11 +470,6 @@ def _public_denied(method: str, rest: str, slug: str) -> tuple[int, str] | None:
         or rest.startswith("/api/accounts")
         or rest.startswith("/api/providers")
         or rest.startswith("/api/app-settings")
-        # Frozen bridge rotation/attestation is an operator control. A kiosk
-        # bearer must never rotate the sandbox's own bridge identity or read
-        # its generation/fingerprint receipt.
-        or re.fullmatch(
-            r"/api/orgs/[^/]+/bridge-credential(?:/rotate)?", rest) is not None
     )
     if frozen_config:
         return 403, "kiosk: configuration is managed from the admin side"
@@ -599,16 +546,15 @@ def _no_nul(path: str) -> str:
     Every path-taking endpoint funnels into `os.path.realpath`, and on Windows
     that raises `ValueError: embedded null character` from inside ntpath —
     below every `except OSError` in this file, so it surfaced as a bare 500.
-    One `?path=%00` did it on /scratch, /file, /disk/file, /disk/delete and the
-    message-attachment stager. A refusal is the contract; a 500 is not."""
+    One `?path=%00` did it on /scratch, /file and the message-attachment
+    stager. A refusal is the contract; a 500 is not."""
     if "\x00" in path:
         raise HTTPException(422, "path contains a null byte")
     return path
 
 
 # ---- the sandbox bridge: the ONE door out of a kiosk container. Serves only
-# the agent gateway + the steering fetch, gated by either the standard
-# deployment's legacy org secret or a frozen deployment's rotatable org token.
+# the agent gateway + the steering fetch, gated by the org's sandbox secret.
 _bridge_cache: dict[str, Any] = {"at": 0.0, "map": {}}
 _STEER_RE = re.compile(r"^/api/orgs/([a-z0-9@-]+)/nodes/([^/]+)/steer$")
 
@@ -632,16 +578,10 @@ def _bridge_secret_map() -> dict[str, str]:
 class BridgeGateway:
     """ASGI wrapper served ONLY on the bridge port (containers reach it via
     host.docker.internal): everything except the two sanctioned paths is a
-    bare 403. Every credential pins an org. Nodes inside one sandbox are
-    mutually trusted here because they share a root-capable container; the
-    frozen bearer is rotatable but is not a per-node isolation boundary."""
+    bare 403. Every secret pins an org. Nodes inside one sandbox are
+    mutually trusted here because they share a root-capable container."""
 
     def __init__(self, inner: ASGIApp) -> None:
-        # In a real frozen launch this constructor runs while assembling the
-        # bridge listener. Mint/read the host-only key now so an unwritable or
-        # malformed credential store refuses startup, before any request.
-        if not bridgeauth.legacy_credentials_allowed():
-            bridgeauth.install_key()
         self.inner = inner
 
     async def __call__(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
@@ -669,19 +609,7 @@ class BridgeGateway:
         if pm:
             secret = pm.group(1)
             rewritten = "/anthropic" + pm.group(2)
-        slug = bridgeauth.resolve_org_credential(secret) if secret else None
-        legacy = False
-        if slug is None and secret and bridgeauth.legacy_credentials_allowed():
-            slug = _bridge_secret_map().get(secret)
-            legacy = slug is not None
-        if slug is not None and not legacy:
-            try:
-                # A persisted forbidden selector or copied subscription file
-                # invalidates even an already-running sandbox's bridge access.
-                # This is deliberately before every allowed route.
-                sandbox.container_auth(store.load_org(slug))
-            except (LedgerError, deployment.DeploymentConfigError):
-                slug = None
+        slug = _bridge_secret_map().get(secret) if secret else None
         m = _STEER_RE.match(path)
         steer_ok = bool(m and m.group(1) == slug)
         allowed = slug and (
@@ -699,10 +627,7 @@ class BridgeGateway:
         if rewritten is not None:
             scope["path"] = rewritten
             scope["raw_path"] = rewritten.encode()
-        scope["state"] = {**(scope.get("state") or {}),
-                          "bridge_slug": slug,
-                          "bridge_scope": "legacy-org" if legacy else "org",
-                          "bridge_legacy": legacy}
+        scope["state"] = {**(scope.get("state") or {}), "bridge_slug": slug}
         await self.inner(scope, receive, send)
 
 
@@ -712,8 +637,9 @@ _origin_cache: dict[str, Any] = {"at": 0.0, "val": ""}
 
 def _public_origin() -> str:
     """ORGTREE_PUBLIC_ORIGIN wins; otherwise the live tunnel hostname that
-    expose.ps1 drops into <data>/.public_origin (TryCloudflare quick-tunnel
-    URLs change per run, so this is re-read on a short TTL)."""
+    the operator writes to <data>/.public_origin after opening a tunnel (see
+    the README; TryCloudflare quick-tunnel URLs change per run, so this is
+    re-read on a short TTL)."""
     if PUBLIC_ORIGIN:
         return PUBLIC_ORIGIN
     if time.time() - _origin_cache["at"] > 5:
@@ -731,8 +657,7 @@ def _share_url(token: str | None) -> str | None:
     """The preauthenticated URL for a kiosk token: explicit origin, else the
     running tunnel's hostname, else best-guess this machine's LAN address."""
     global _LAN_IP
-    if (not deployment.current_policy().allow_public_listener
-            or not token or not PUBLIC_PORT):
+    if not token or not PUBLIC_PORT:
         return None
     origin = _public_origin()
     if origin:
@@ -800,10 +725,6 @@ ledger_mod.external_candidates = _external_candidates
 @app.on_event("startup")  # type: ignore[deprecated]  # migrating to lifespan is a runtime change (D-079: inert wave)
 async def _wire_notify() -> None:  # type: ignore[unused-function]  # registered by the decorator
     global mail_notify, _LOOP
-    # A direct ``uvicorn orgtree.api:app`` launch bypasses main(), so repeat
-    # the install-wide preflight at the ASGI lifecycle boundary. It must run
-    # before warm processes or background drivers can admit a turn.
-    _deployment_preflight()
     # Mark that THIS process began watching the Antigravity lane. Without it
     # the window record cannot tell "orgtree was down, a wall may have passed
     # unseen" from "nothing happened", and every reconstructed window would
@@ -1038,9 +959,8 @@ def hub_changed(slug: str) -> None:
 class KioskSpec(Body):
     credits: int = 30                 # top-level holdings cap (user ruling)
     spend_limit: float = 50.0         # USD hard limit (user ruling 2026-07-31)
-    storage_limit_mb: int = 4096      # sandboxed: the org DISK size (4096 MB
-                                      # floor, user ruling 2026-08-01);
-                                      # unsandboxed: loose workspace+scratch cap
+    storage_limit_mb: int = 4096      # unsandboxed: loose workspace+scratch
+                                      # cap; sandboxed orgs have no cap
     sandbox: bool = True              # run agent turns in a Docker container
     # ceiling spec §3: the permission ceiling is visible/editable AT CREATION —
     # the default is permissive (mcp "*", user ruling), so narrowing it must
@@ -1057,8 +977,6 @@ class OrgCreate(Body):
     permission_mode: str = "acceptEdits"
     kiosk: KioskSpec | None = None    # present = the org is BORN a kiosk
     sandbox: bool = False             # normal orgs may sandbox too (user ruling)
-    disk_mb: int | None = None        # sandboxed non-kiosk orgs: virtual-disk
-                                      # size (≥4096; None = DISK_MB fallback)
     net_autoconnect: bool = True      # F-06: join the LOCAL mail hub (creation
                                       # checkbox; not gated on hub detection)
     net_hubs: list[str] = []          # F-06: remote hub addresses, typed
@@ -1109,86 +1027,9 @@ def orgs_list(request: Request) -> list[dict[str, Any]]:
     return out
 
 
-def _bridge_credential_attestation(slug: str, request: Request) -> dict[str, Any]:
-    """Admin-only, secret-free state for the frozen per-org bridge bearer."""
-    if _public_slug(request):
-        raise HTTPException(403, "bridge credentials are operator-managed")
-    if deployment.current_policy().allow_legacy_sandbox_credentials:
-        raise HTTPException(
-            409, "rotatable bridge credentials are active only in the frozen "
-                 "deployment profile")
-    try:
-        org = store.load_org(slug)
-        # Retain the authoritative frozen selector/copied-file checks before
-        # reporting this sandbox as ready.
-        sandbox.container_auth(org)
-        return bridgeauth.credential_attestation(org)
-    except LedgerError as e:
-        raise HTTPException(404, str(e))
-    except deployment.DeploymentConfigError as e:
-        raise HTTPException(409, str(e))
-    except bridgeauth.BridgeCredentialError as e:
-        raise HTTPException(503, str(e))
-
-
-@app.get("/api/orgs/{slug}/bridge-credential")
-def bridge_credential_status(slug: str, request: Request) -> dict[str, Any]:
-    """Inspect the frozen org credential without returning the bearer."""
-    return _bridge_credential_attestation(slug, request)
-
-
-@app.post("/api/orgs/{slug}/bridge-credential/rotate")
-async def bridge_credential_rotate(
-        slug: str, request: Request) -> dict[str, Any]:
-    """Rotate one frozen org bearer and prove the planted old one is dead."""
-    _bridge_credential_attestation(slug, request)
-    try:
-        receipt = bridgeauth.rotate_org_credential(slug)
-    except LedgerError as e:
-        raise HTTPException(404, str(e))
-    except deployment.DeploymentConfigError as e:
-        raise HTTPException(409, str(e))
-    except bridgeauth.BridgeCredentialError as e:
-        raise HTTPException(503, str(e))
-    await hub.changed(slug)
-    return {**receipt, "existing_processes_must_refresh": True}
-
-
 @app.post("/api/orgs")
 def orgs_create(body: OrgCreate) -> dict[str, Any]:
-    policy = deployment.current_policy()
-    # Validate global defaults before create_org writes a workspace or doc.
     dflt = load_org_defaults()
-    default_kiosk = (dflt.get("kiosk")
-                      if isinstance(dflt.get("kiosk"), dict) else {})
-    if not policy.allow_legacy_sandbox_credentials and (
-            str(dflt.get("api_key") or "").strip().lower() == "subscription"
-            or str(default_kiosk.get("api_key") or "").strip().lower()
-            == "subscription"):
-        raise HTTPException(
-            422, "the frozen deployment profile forbids the 'subscription' "
-                 "sandbox auth value in org defaults; use proxied auth or an "
-                 "explicit API key")
-    requested_sandbox = (bool(body.kiosk.sandbox)
-                         if body.kiosk is not None else bool(body.sandbox))
-    if policy.require_sandboxed_orgs and not requested_sandbox:
-        raise HTTPException(
-            422, "the frozen deployment profile requires every org to be "
-                 "sandboxed — create this org with sandbox enabled")
-    # sandboxed orgs ride a fixed-size virtual disk with a 4096 MB minimum
-    # (the system seed and transcripts count inside the cap) — refuse smaller
-    # limits at creation instead of silently flooring them at migration
-    # (user ruling 2026-08-01)
-    if body.kiosk is not None and body.kiosk.sandbox \
-            and int(body.kiosk.storage_limit_mb) < 4096:
-        raise HTTPException(422, "sandboxed orgs ride a fixed-size disk with "
-                                 "a 4096 MB minimum — set storage to at "
-                                 "least 4096 MB")
-    if body.kiosk is None and body.sandbox and body.disk_mb is not None \
-            and int(body.disk_mb) < 4096:
-        raise HTTPException(422, "sandboxed orgs ride a fixed-size disk with "
-                                 "a 4096 MB minimum — set disk_mb to at "
-                                 "least 4096")
     try:
         org = store.create_org(body.name, body.dirs, body.permission_mode)
     except LedgerError as e:
@@ -1282,9 +1123,7 @@ def orgs_create(body: OrgCreate) -> dict[str, Any]:
         # no kiosk limits or public URL
         with store.DOC_LOCK:
             o = store.load_org(org.d["slug"])
-            o.d["sandbox"] = {"enabled": True, "secret": secrets.token_hex(16),
-                              **({"limit_mb": int(body.disk_mb)}
-                                 if body.disk_mb is not None else {})}
+            o.d["sandbox"] = {"enabled": True, "secret": secrets.token_hex(16)}
             store.save_org(o)
             sandbox.warm(o)
         _bridge_cache["at"] = 0.0
@@ -1811,20 +1650,6 @@ def org_tree(slug: str, request: Request) -> dict[str, Any]:
             u = supervisor.workspace_usage_cached(org)
             if u is not None:
                 tree["kiosk"]["storage_mb"] = round(u / 1048576, 2)
-    if sandbox.is_sandboxed(org) and sandbox.on_disk(slug):
-        # the org disk's headline numbers ride every tree payload: the
-        # persistent hard-full alert is STATE (survives reload), and the
-        # storage chip needs used/total without a second request
-        from . import disk as dsk
-        du = dsk.usage(slug, max_age=15.0)
-        tree["disk"] = {
-            "used_mb": round(du[0] / 1048576, 1) if du else None,
-            "total_mb": round(du[1] / 1048576, 1) if du else None,
-            "blocked": bool(tree.get("storage_blocked")),
-            "full": bool(org.d.get("storage_full")),
-            # the yellow divergence (pending shrink): requested vs actual
-            "pending_mb": (org.d.get("disk") or {}).get("pending_size_mb"),
-        }
     # F-06: hub config + live connectivity for the status surfaces — never
     # the secret (status_block guarantees it); None for kiosks
     tree["net"] = net.status_block(cast("dict[str, Any]", org.d))
@@ -1943,7 +1768,7 @@ class Settings(Body):
     org_dirs: list[Any] | None = None       # external folders [{path, mode}] (ws excluded)
     max_top_grant: int | None = None
     default_top_grant: int | None = None    # pre-filled grant for top-level hires
-    compact_at: int | None = None           # compaction threshold in percent, 50..95
+    compact_at: int | None = None           # compaction threshold in percent, 20..95
     clear_fable_lock: bool = False
     fable_limit_policy: str | None = None   # halt | opus | dissolve
     fable_filter_policy: str | None = None  # halt | opus | auto-autopsy (content-filter flags)
@@ -1995,7 +1820,7 @@ class Settings(Body):
 # (user spec): configured from the root page; every NEWLY created org is
 # born with these values. Stored org-doc-shaped in <data>/defaults.json.
 _DEFAULTS_BASE = {
-    "max_top_grant": 1000, "default_top_grant": 50, "compact_at": 0.80,
+    "max_top_grant": 1000, "default_top_grant": 50, "compact_at": 0.50,
     "fable_limit_policy": "halt", "fable_filter_policy": "halt",
     "fable_filter_model": "opus",
     "prefer_reserve": True,
@@ -2041,7 +1866,7 @@ def defaults_set(body: Settings) -> dict[str, Any]:
     if body.default_top_grant is not None and body.default_top_grant >= 0:
         d["default_top_grant"] = int(body.default_top_grant)
     if body.compact_at is not None:
-        d["compact_at"] = min(95, max(50, int(body.compact_at))) / 100.0
+        d["compact_at"] = min(95, max(20, int(body.compact_at))) / 100.0
     if body.fable_limit_policy in ("halt", "opus", "dissolve"):
         d["fable_limit_policy"] = body.fable_limit_policy
     if body.fable_filter_policy in ("halt", "opus", "auto-autopsy"):
@@ -2103,13 +1928,6 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
         org = store.load_org(slug)
     except LedgerError as e:
         raise HTTPException(404, str(e))
-    if body.api_key is not None \
-            and body.api_key.strip().lower() == "subscription" \
-            and not deployment.current_policy().allow_legacy_sandbox_credentials:
-        raise HTTPException(
-            422, "the frozen deployment profile forbids 'subscription' auth "
-                 "because it copies host credentials into the sandbox; use "
-                 "proxied auth or an explicit API key")
     ws = org.d.get("workspace")
     warnings: list[str] = []
     if body.org_dirs is not None:
@@ -2163,8 +1981,8 @@ def _org_settings_locked(slug: str, body: Settings) -> dict[str, Any]:
     if body.default_top_grant is not None and body.default_top_grant >= 0:
         org.d["default_top_grant"] = int(body.default_top_grant)
     if body.compact_at is not None:
-        # 50–95%; the 95% ceiling is NOT configurable (user ruling)
-        org.d["compact_at"] = min(95, max(50, int(body.compact_at))) / 100.0
+        # 20–95%; the 95% ceiling is NOT configurable (user ruling)
+        org.d["compact_at"] = min(95, max(20, int(body.compact_at))) / 100.0
     if body.clear_fable_lock and org.d.get("fable_lock"):
         org.clear_fable_lock()
         warnings.append("fable lock cleared — fable agents may run and be rehired again")
@@ -2441,17 +2259,11 @@ async def org_kiosk(slug: str, body: KioskCfg) -> dict[str, Any]:
         if body.spend_limit is not None:
             k["spend_limit"] = max(0.0, float(body.spend_limit))
         if body.storage_limit_mb is not None:
-            # sandboxed kiosks: the limit IS the disk size — same 4096 MB
-            # floor as creation, or the migration would silently re-floor it
-            if k.get("sandbox") and int(body.storage_limit_mb) < 4096:
-                raise HTTPException(
-                    422, "sandboxed orgs ride a fixed-size disk with a "
-                         "4096 MB minimum — set storage to at least 4096 MB")
             k["storage_limit_mb"] = max(0, int(body.storage_limit_mb))
         # security review 2026-08-01: subscription-auth (copied host OAuth
-        # credentials ON the org disk) and a public kiosk URL are mutually
+        # credentials in the sandbox home) and a public kiosk URL are mutually
         # exclusive — structurally, not by filename filter (root-in-container
-        # can copy the token anywhere the recovery browser serves)
+        # can copy the token anywhere the kiosk serves)
         if k.get("enabled") and k.get("sandbox") \
                 and sandbox.uses_subscription_auth(dict(k)):
             raise HTTPException(
@@ -5721,18 +5533,6 @@ def _upstream() -> httpx.AsyncClient:
     return _hx
 
 
-def _anthropic_operation_allowed(method: str, path: str) -> bool:
-    """Whether this deployment may relay one Anthropic API operation.
-
-    Standard mode keeps the historical transparent passthrough. Frozen mode
-    has one measured CLI requirement: message creation. Unknown methods and
-    paths are refused before credentials are read or an upstream is opened.
-    """
-    policy = deployment.current_policy()
-    return (policy.allow_broad_anthropic_proxy
-            or (method == "POST" and path == "v1/messages"))
-
-
 @app.api_route("/anthropic/{path:path}",
                methods=["GET", "POST", "HEAD", "PUT", "DELETE"])
 async def anthropic_proxy(path: str, request: Request) -> StreamingResponse:
@@ -5742,8 +5542,6 @@ async def anthropic_proxy(path: str, request: Request) -> StreamingResponse:
     bslug = getattr(request.state, "bridge_slug", None)
     if not bslug:
         raise HTTPException(403, "bridge only")
-    if not _anthropic_operation_allowed(request.method, path):
-        raise HTTPException(403, "operation not allowed by deployment policy")
     # api_fallback (user feature 2026-08-17): while the org's fallback window
     # is open, this passthrough re-auths with the org's KEY instead of the
     # host OAuth token — same container, same proxy, no recreate; reverting
@@ -6979,13 +6777,6 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
         # It runs before the gates below because a lookup performs none of
         # those operations.
         return _op_lookup_call(body, a)
-    if body.tool in ("orgtree_self_restart", "orgtree_self_update",
-                     "orgtree_prime_restart") \
-            and not deployment.current_policy().allow_agent_restart:
-        raise HTTPException(
-            403, "the frozen deployment profile disables agent-triggered "
-                 "self-update, self-restart, and primed restart; deploy this "
-                 "installation through an operator-controlled path")
     if body.tool in ("orgtree_self_restart", "orgtree_self_update") \
             and _arg_flag(a, "force"):
         return _forced_self_restart(body, a)
@@ -7401,7 +7192,7 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                     shell = str(a.get("shell") or "native").strip().lower()
                     if shell == "bash" and kind in ("command", "stream"):
                         # ☠ REFUSE, NEVER FALL BACK (2026-08-22). Handing a
-                        # bash-idiom target to cmd.exe because bash was
+                        # bash-idiom target to sh because bash was
                         # missing is the defect this field exists to fix,
                         # rebuilt one level up and made worse: the agent
                         # asked for bash and was told yes, so it has no
@@ -7416,17 +7207,13 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
                         if supervisor.wd_bash_exe() is None:
                             raise LedgerError(
                                 "shell='bash' was asked for but no bash can "
-                                "be found on this machine (looked on PATH, "
-                                "in the Git for Windows install locations, "
-                                "and in the registry; a WSL "
-                                "System32\\bash.exe is deliberately NOT "
-                                "used — it would run your command in a "
-                                "different filesystem entirely). REFUSING "
-                                "rather than quietly running your target in "
-                                "cmd.exe, where a bash idiom matches nothing "
-                                "and the dog looks healthy forever. Install "
-                                "Git for Windows, or write a cmd target "
-                                "(findstr, dir /b, %VAR%) and omit `shell`.")
+                                "be found on this machine (looked in /bin, "
+                                "/usr/bin, /usr/local/bin and on PATH). "
+                                "REFUSING rather than quietly running your "
+                                "target in sh, where a bash idiom can match "
+                                "nothing and the dog looks healthy forever. "
+                                "Install bash, or write a POSIX sh target "
+                                "and omit `shell`.")
                     result = org.watchdog_create(
                         body.node, a.get("name"), kind, tgt,
                         a.get("pattern"), a.get("interval_s") or 60,
@@ -7901,8 +7688,8 @@ def agent_call(body: AgentCall, request: Request) -> dict[str, Any]:
     if smoke_req is not None:
         # FAIL LOUDLY AT CREATE TIME (2026-08-22). Arming a dog used to tell
         # the agent nothing about whether its target actually works, so a
-        # command that never even STARTED — cmd.exe answering "'grep' is not
-        # recognized", every 60s, for nine days — was indistinguishable from
+        # command that never even STARTED — the shell answering "command not
+        # found", every 60s, for nine days — was indistinguishable from
         # a condition that had not happened yet. Three dogs on this machine
         # died that way. Running the target once, here, through the SAME
         # `_wd_popen` the engine uses, would have made every one of them
@@ -8051,8 +7838,12 @@ async def node_upload(slug: str, nid: str, request: Request,
         raise HTTPException(413, "the org is over its storage limit — uploads "
                                  "are paused until files are deleted (the "
                                  "block lifts automatically)")
+    # a browser on Windows still sends a "\"-separated name; os.path.basename
+    # only splits on "/" here (POSIX), so a bare backslash swap first keeps
+    # the upload from landing as one file named after its whole fake path
     safe = re.sub(r"[^\w .()+\-]", "_",
-                  os.path.basename(name or "upload.bin")).strip(" .") or "upload.bin"
+                  os.path.basename((name or "upload.bin").replace("\\", "/"))
+                  ).strip(" .") or "upload.bin"
     data = await request.body()
     if not data:
         raise HTTPException(422, "empty upload")
@@ -8084,7 +7875,7 @@ async def node_upload(slug: str, nid: str, request: Request,
         with open(os.path.join(updir, final), "wb") as f:
             f.write(data)
     except OSError as e:
-        # ENOSPC on a full org disk, or a name the filesystem still refuses
+        # ENOSPC on a full disk, or a name the filesystem still refuses
         raise HTTPException(422, f"could not store the upload: {e}")
     return {"path": f"uploads/{final}", "bytes": len(data)}
 
@@ -8290,480 +8081,6 @@ def node_file(slug: str, nid: str, path: str = "") -> FileResponse:
     if not os.path.isfile(full):
         raise HTTPException(404, f"no such file: {path!r}")
     return FileResponse(full, filename=os.path.basename(full))
-
-
-# ------------------------------------------------ the org disk (recovery browser)
-# The user verdict's built-in file browser over the org's virtual disk — its
-# OWN surface, deliberately NOT /api/fs (that is the HOST browser and stays in
-# the public deny list). Org-scoped routes, so the kiosk gateway's slug check
-# scopes visitors to their own org's disk for free. Reads and deletes go over
-# \\wsl.localhost and work with the container STOPPED and the disk 100% FULL
-# (drilled, not assumed); enumeration runs INSIDE the distro (9p is too slow).
-
-# engine credential/state files on the disk (subscription auth copies the
-# HOST's OAuth credentials into the sandbox home) — never served to visitors
-# ⚠ `.bridge` is not an engine file — orgtree writes it itself
-# (sandbox.py: `{home}/orgtree/.bridge` = {"url", "secret"}), and it holds the
-# org's SANDBOX BRIDGE SECRET. The bridge listener binds 0.0.0.0, so a visitor
-# who downloads this file gets: the /api/agent gateway this very matrix
-# freezes for the public (acting as ANY node of the org), the node steer
-# fetch, and the /anthropic proxy — which attaches the HOST's subscription
-# token. Verified reachable at GET …/disk/file?path=home/orgtree/.bridge.
-_PUBLIC_DISK_DENY = (".credentials.json", ".claude.json", ".bridge")
-#: how much of a file a visitor download scans for this org's bridge secret.
-#: 256 KiB covers any plausible copy of a credential file while costing one
-#: read; see disk_file for why the name check alone is not a boundary.
-_SECRET_SCAN_BYTES = 262144
-_SID_FILE = re.compile(r"^home/\.claude/projects/[^/]+/([0-9a-f-]{36})\.jsonl$")
-
-
-def _disk_org(slug: str) -> Org:
-    try:
-        org = store.load_org(slug)
-    except LedgerError as e:
-        raise HTTPException(404, str(e))
-    if not org.d.get("disk"):
-        raise HTTPException(409, "this org has no virtual disk (not sandboxed, "
-                                 "or not yet migrated)")
-    return org
-
-
-def _disk_rel(slug: str, path: str) -> tuple[str, str]:
-    """(relative posix path, absolute windows path) — canonicalized, with
-    containment ASSERTED before any read/download/unlink. A traversal here
-    would reach the host filesystem from a kiosk URL: the worst outcome
-    available in this feature, so both a lexical and a realpath check."""
-    rel = posixpath.normpath(_no_nul(path or "").replace("\\", "/").strip("/"))
-    if not rel or rel == "." or rel == ".." or rel.startswith("../") \
-            or rel.startswith("/") or ":" in rel:
-        raise HTTPException(422, "path escapes the org disk")
-    from . import disk as dsk
-    root = dsk.windows_path(slug)
-    full = os.path.join(root, *rel.split("/"))
-    if os.path.realpath(full) != full and not os.path.realpath(full).startswith(
-            os.path.realpath(root) + os.sep):
-        raise HTTPException(422, "path escapes the org disk")
-    return rel, full
-
-
-_SEED_ROOTS = ("usr", "var", "etc", "opt", "root", "srv")
-
-
-def _disk_classify(org: Org, rel: str, public: bool) -> tuple[str, str | None]:
-    """The verdict's deletion policy. reclaimable = freely deletable and
-    POSITIVELY dead weight; blocked = shown, delete refused, with the reason;
-    content = ordinary agent output. System-seed paths are blocked in BOTH
-    modes (explorer follow-up): deleting /usr content bricks the container —
-    but they are SHOWN, because '4 GB cap, 1.2 GB of it /usr' answers "where
-    did my space go" better than any text."""
-    if rel.split("/", 1)[0] in _SEED_ROOTS:
-        return "blocked", "system seed — the image's own files"
-    m = _SID_FILE.match(rel)
-    if m:
-        sid = m.group(1)
-        for nid, n in org.nodes.items():
-            if n.get("session_id") == sid:
-                if n.get("bearer_state") == "lost":
-                    return "reclaimable", (f"lost generation {nid} — never "
-                                           f"consultable or rehirable again")
-                if n["state"] == "live":
-                    return "blocked", (f"live session of {nid} — deleting "
-                                       f"breaks its resume")
-                if n.get("bearer_state"):
-                    return "blocked", (f"knowledge bearer {nid} — deleting "
-                                       f"kills its oracle")
-                return "blocked", (f"archived node {nid} — deleting breaks "
-                                   f"its rehire")
-        return "reclaimable", "no node owns this session"
-    if rel.rsplit("/", 1)[-1] in _PUBLIC_DISK_DENY:
-        if public:
-            return "blocked", "credential/secret file"
-        return "content", "credential/secret file — admin-side only"
-    return "content", None
-
-
-@app.get("/api/orgs/{slug}/disk")
-def disk_list(slug: str, request: Request, offset: int = 0,
-              limit: int = 200) -> dict[str, Any]:
-    """Files by size DESCENDING (the sort that matters when freeing space
-    fast) + the live usage readout. Paginated — never the whole tree."""
-    org = _disk_org(slug)
-    public = bool(_public_slug(request))
-    from . import disk as dsk
-    try:
-        du = dsk.usage(slug, max_age=5.0)
-        files = dsk.enumerate_by_size(slug, limit=max(1, min(limit, 500)),
-                                      offset=max(0, offset))
-    except dsk.DiskError as e:
-        raise HTTPException(503, str(e))
-    for f in files:
-        cls, why = _disk_classify(org, str(f["path"]), public)
-        f["class"] = cls
-        if why:
-            f["reason"] = why
-    return {"used": du[0] if du else None, "total": du[1] if du else None,
-            "blocked": bool(org.d.get("storage_blocked")),
-            "full": bool(org.d.get("storage_full")),
-            # admin-only nudge: org disks are SPARSE, the VM cap is the
-            # aggregate wall — None = unset on the host
-            **({} if public else {
-                "vm_cap_mib": sandbox.vm_disk_cap_mib(),
-                "size_mb": int((org.d.get("disk") or {}).get("size_mb") or 0),
-                "pending_mb": (org.d.get("disk") or {}).get("pending_size_mb"),
-            }),
-            "files": files, "offset": max(0, offset),
-            "limit": max(1, min(limit, 500))}
-
-
-def _disk_classify_dir(org: Org, rel: str, public: bool,
-                       protected: list[str]) -> tuple[str, str | None]:
-    """Directory classes for the explorer: seed dirs blocked; a dir whose
-    subtree holds protected transcripts is blocked WHOLE (half-deleting a
-    tree because a protected file sat in it is the worst outcome here)."""
-    if rel.split("/", 1)[0] in _SEED_ROOTS:
-        return "blocked", "system seed — the image's own files"
-    hits = sum(1 for p in protected if p.startswith(rel + "/"))
-    if hits:
-        return "blocked", f"contains {hits} protected session transcript(s)"
-    return "content", None
-
-
-def _protected_transcripts(org: Org, slug: str, public: bool) -> list[str]:
-    """Transcript files whose deletion is refused — from the cached walk, so
-    this costs nothing beyond the walk both views already share."""
-    from . import disk as dsk
-    return [p for p, _sz in dsk.subtree_files(slug, "home")
-            if _SID_FILE.match(p)
-            and _disk_classify(org, p, public)[0] == "blocked"]
-
-
-@app.get("/api/orgs/{slug}/disk/dir")
-def disk_dir(slug: str, request: Request, path: str = "") -> dict[str, Any]:
-    """Explorer mode: ONE directory level, entries intermixed by size
-    descending (deliberate deviation from folders-first — the view exists
-    for size triage). Served from the cached single walk; works with the
-    container stopped, same as everything on this surface."""
-    org = _disk_org(slug)
-    public = bool(_public_slug(request))
-    rel = ""
-    if path.strip("/"):
-        rel, _full = _disk_rel(slug, path)
-    from . import disk as dsk
-    try:
-        entries = dsk.list_dir(slug, rel)
-        protected = _protected_transcripts(org, slug, public)
-        du = dsk.usage(slug, max_age=5.0)
-    except dsk.DiskError as e:
-        raise HTTPException(503, str(e))
-    for e in entries:
-        p = str(e["path"])
-        cls, why = (_disk_classify_dir(org, p, public, protected)
-                    if e["dir"] else _disk_classify(org, p, public))
-        e["class"] = cls
-        if why:
-            e["reason"] = why
-    return {"path": rel, "entries": entries,
-            "used": du[0] if du else None, "total": du[1] if du else None,
-            "blocked": bool(org.d.get("storage_blocked")),
-            "full": bool(org.d.get("storage_full")),
-            **({} if public else {
-                "vm_cap_mib": sandbox.vm_disk_cap_mib(),
-                "size_mb": int((org.d.get("disk") or {}).get("size_mb") or 0),
-                "pending_mb": (org.d.get("disk") or {}).get("pending_size_mb"),
-            })}
-
-
-@app.get("/api/orgs/{slug}/disk/file")
-def disk_file(slug: str, request: Request, path: str = "") -> FileResponse:
-    """Streaming download (FileResponse streams — a multi-GB file is never
-    buffered). Visitors get everything except the engine credential files."""
-    org = _disk_org(slug)
-    rel, full = _disk_rel(slug, path)
-    public = bool(_public_slug(request))
-    cls, why = _disk_classify(org, rel, public)
-    if cls == "blocked" and rel.rsplit("/", 1)[-1] in _PUBLIC_DISK_DENY:
-        raise HTTPException(403, why or "not served publicly")
-    if not os.path.isfile(full):
-        raise HTTPException(404, f"no such file: {rel!r}")
-    # ☠ A FILENAME denylist is not a boundary here, and the sandbox suite
-    # proved it end to end: every sandboxed agent has passwordless root on the
-    # org disk, so `cp ~/orgtree/.bridge workspace/notes.txt` renames the
-    # secret out of the deny tuple and a kiosk visitor downloads it with a 200.
-    # That secret opens /api/agent as ANY node of the org and the /anthropic
-    # proxy, which attaches the HOST's subscription OAuth token — so this is
-    # the whole sandbox boundary, defeated by a copy.
-    #
-    # Content is therefore checked as well as name, for visitors only: any file
-    # carrying this org's bridge secret is refused whatever it is called. The
-    # scan is bounded and cheap (both the 32-hex legacy root and the longer
-    # frozen org token are small; a copied credential file is what this defends
-    # against, not a token buried beyond 256 KiB in a multi-GB artifact).
-    if public:
-        credentials = bridgeauth.accepted_credentials(org)
-        if credentials:
-            try:
-                with open(full, "rb") as f:
-                    head = f.read(_SECRET_SCAN_BYTES)
-                if any(secret.encode() in head for secret in credentials):
-                    raise HTTPException(403, "credential/secret file")
-            except OSError:
-                pass          # unreadable: the FileResponse below reports it
-    return FileResponse(full, filename=os.path.basename(full))
-
-
-class DiskDelete(Body):
-    paths: list[str]
-
-
-@app.post("/api/orgs/{slug}/disk/delete")
-def disk_delete(slug: str, body: DiskDelete, request: Request) -> dict[str, Any]:
-    """Multi-select delete. Classification is enforced HERE, server-side —
-    the UI's greying is presentation. Works at 100% full (unlink needs no
-    free space on ext4 — drilled). Ends with the recovery loop: re-measure,
-    and the existing storage_check clear path lifts the block/alert."""
-    org = _disk_org(slug)
-    public = bool(_public_slug(request))
-    from . import disk as dsk
-    results: list[dict[str, Any]] = []
-    for p in body.paths[:500]:
-        try:
-            rel, full = _disk_rel(slug, p)
-        except HTTPException as e:
-            results.append({"path": p, "ok": False, "error": e.detail})
-            continue
-        if os.path.isdir(full):
-            # directory delete (explorer mode): the class rules apply to the
-            # WHOLE subtree and the operation is all-or-nothing — a protected
-            # file anywhere in it refuses everything, never a partial delete
-            seed_cls, seed_why = _disk_classify_dir(org, rel, public, [])
-            if seed_cls == "blocked":
-                results.append({"path": rel, "ok": False, "error": seed_why})
-                continue
-            subs = dsk.subtree_files(slug, rel, max_age=0.0)
-            bad = [(sp, _disk_classify(org, sp, public)[1]) for sp, _s in subs
-                   if _disk_classify(org, sp, public)[0] == "blocked"]
-            if bad:
-                results.append({"path": rel, "ok": False,
-                                "error": f"subtree holds {len(bad)} protected "
-                                         f"file(s) — first: {bad[0][1]}"})
-                continue
-            n_files, n_bytes, err = 0, 0, None
-            try:
-                for base, dirs, files in os.walk(full, topdown=False):
-                    for f in files:
-                        fp = os.path.join(base, f)
-                        n_bytes += os.path.getsize(fp)
-                        os.unlink(fp)
-                        n_files += 1
-                    for d in dirs:
-                        os.rmdir(os.path.join(base, d))
-                os.rmdir(full)
-            except OSError as e:
-                err = str(e)
-            results.append({"path": rel, "ok": err is None,
-                            "files": n_files, "bytes": n_bytes,
-                            **({"error": err} if err else {})})
-            continue
-        cls, why = _disk_classify(org, rel, public)
-        if cls == "blocked":
-            results.append({"path": rel, "ok": False, "error": why})
-            continue
-        try:
-            os.unlink(full)
-            results.append({"path": rel, "ok": True})
-        except OSError as e:
-            results.append({"path": rel, "ok": False, "error": str(e)})
-    dsk.invalidate(slug)
-    supervisor.storage_check(slug)          # may auto-clear blocked/full
-    du = dsk.usage(slug, max_age=0.0)
-    org = store.load_org(slug)
-    return {"results": results,
-            "used": du[0] if du else None, "total": du[1] if du else None,
-            "blocked": bool(org.d.get("storage_blocked")),
-            "full": bool(org.d.get("storage_full"))}
-
-
-class DiskResize(Body):
-    size_mb: int | None = None
-    cancel: bool = False       # one-click cancel of a pending shrink (ruled)
-
-
-def _disk_doc_update(slug: str, **kv: Any) -> None:
-    with store.DOC_LOCK:
-        o2 = store.load_org(slug)
-        d = dict(o2.d.get("disk") or {})
-        for k, v in kv.items():
-            if v is None:
-                d.pop(k, None)
-            else:
-                d[k] = v
-        o2.d["disk"] = d
-        store.save_org(o2)
-
-
-@app.post("/api/orgs/{slug}/disk/resize")
-def disk_resize(slug: str, body: DiskResize, request: Request) -> dict[str, Any]:
-    """Resize, ADMIN only (it spends/reshapes host disk). GROW applies
-    online, immediately, and CLEARS any pending shrink outright (ruled — a
-    grow can always apply now). SHRINK becomes a PENDING request persisted
-    in the org doc: it applies at the next moment this org's container is
-    down (or via /disk/resize/apply), and the UI shows requested vs actual
-    until then. A shrink below current usage is refused HERE with the MB to
-    free — the same refuse-not-guess rule the apply path enforces."""
-    if _public_slug(request):
-        raise HTTPException(403, "admin side only")
-    org = _disk_org(slug)
-    from . import disk as dsk
-    d = dict(org.d.get("disk") or {})
-    cur = int(d.get("size_mb") or 0)
-    if body.cancel:
-        _disk_doc_update(slug, pending_size_mb=None)
-        return {"size_mb": cur, "pending_mb": None}
-    if body.size_mb is None:
-        raise HTTPException(422, "size_mb required (or cancel: true)")
-    want = int(body.size_mb)
-    if want == cur:
-        _disk_doc_update(slug, pending_size_mb=None)   # replace/no-op clears
-        return {"size_mb": cur, "pending_mb": None}
-    if want > cur:
-        try:
-            dsk.grow(slug, want)
-        except dsk.DiskError as e:
-            raise HTTPException(503, str(e))
-        _disk_doc_update(slug, size_mb=want, pending_size_mb=None)
-        supervisor.storage_check(slug)      # a grow may clear blocked/full
-        du = dsk.usage(slug, max_age=0.0)
-        return {"size_mb": want, "pending_mb": None,
-                "used": du[0] if du else None, "total": du[1] if du else None}
-    # shrink request: floor + live usage refusal, then stage it
-    if want < 4096:
-        raise HTTPException(422, "org disks have a 4096 MB minimum (the "
-                                 "system seed and transcripts live inside "
-                                 "the cap)")
-    du = dsk.usage(slug, max_age=0.0)
-    if du and du[0] > want * 1048576 * 0.9:
-        need = int((du[0] - want * 1048576 * 0.9) / 1048576) + 1
-        raise HTTPException(422, f"usage is {du[0] // 1048576} MB — free "
-                                 f"about {need} MB before shrinking to "
-                                 f"{want} MB")
-    # a new request supersedes any earlier one (ruled: replaceable)
-    _disk_doc_update(slug, pending_size_mb=want)
-    return {"size_mb": cur, "pending_mb": want}
-
-
-@app.post("/api/orgs/{slug}/disk/resize/apply")
-def disk_resize_apply(slug: str, request: Request) -> dict[str, Any]:
-    """The BRIDGE (ruled — a pending shrink the operator cannot trigger is a
-    wall with a legal sequence behind it): briefly stops THIS org's agents,
-    applies the pending shrink, and lets the container restart on the next
-    turn. Never touches the backend or other orgs."""
-    if _public_slug(request):
-        raise HTTPException(403, "admin side only")
-    org = _disk_org(slug)
-    if not int((org.d.get("disk") or {}).get("pending_size_mb") or 0):
-        raise HTTPException(422, "no pending resize")
-    from . import disk as dsk
-    sandbox.stop_container(slug)
-    try:
-        note = sandbox.try_apply_pending_resize(org)
-    except (dsk.DiskError, RuntimeError) as e:
-        raise HTTPException(503, str(e))
-    if note:
-        raise HTTPException(422, note)     # kept pending — says what to free
-    org = store.load_org(slug)
-    d = dict(org.d.get("disk") or {})
-    du = dsk.usage(slug, max_age=0.0)
-    return {"size_mb": int(d.get("size_mb") or 0), "pending_mb": None,
-            "used": du[0] if du else None, "total": du[1] if du else None}
-
-
-# ------------------------------------------- pre-migration backup sweep
-def _du_native(path: str) -> int:
-    """Host-dir size (native paths only — never point this at UNC)."""
-    total = 0
-    stack = [path]
-    while stack:
-        d = stack.pop()
-        try:
-            with os.scandir(d) as it:
-                for e in it:
-                    try:
-                        if e.is_dir(follow_symlinks=False):
-                            stack.append(e.path)
-                        elif e.is_file(follow_symlinks=False):
-                            total += e.stat(follow_symlinks=False).st_size
-                    except OSError:
-                        pass
-        except OSError:
-            pass
-    return total
-
-
-def _legacy_targets(slug: str) -> tuple[list[str], list[str]]:
-    """(existing legacy volume names, existing host-dir copies) — the state
-    the disk migration copied FROM and kept for rollback."""
-    vols = [sandbox.sys_volume(slug, d)
-            for d in ("usr", "var", "etc", "opt", "root", "srv")
-            if subprocess.run(["docker", "volume", "inspect",
-                               sandbox.sys_volume(slug, d)],
-                              capture_output=True,
-                              creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                                             if os.name == "nt" else 0)
-                              ).returncode == 0]
-    dirs = [p for p in (sandbox.sandbox_root(slug),
-                        store.workspace_dir(slug), store.scratch_root(slug))
-            if os.path.isdir(p)]
-    return vols, dirs
-
-
-@app.get("/api/orgs/{slug}/sweep-legacy")
-def sweep_legacy_preview(slug: str, request: Request) -> dict[str, Any]:
-    """What the pre-migration backup still costs — admin decides whether to
-    drop the rollback. Refuses unless the org's disk is mounted and healthy
-    (never delete the backup of a disk that can't prove it's alive)."""
-    if _public_slug(request):
-        raise HTTPException(403, "admin side only")
-    org = _disk_org(slug)
-    from . import disk as dsk
-    if not dsk.is_mounted(org.d["slug"]):
-        raise HTTPException(503, "the org disk is not mounted — not touching "
-                                 "its rollback backup")
-    vols, dirs = _legacy_targets(slug)
-    vol_bytes = sandbox.sandbox_volumes_bytes(slug, max_age=0.0) or 0
-    host_bytes = sum(_du_native(p) for p in dirs)
-    return {"volumes": vols, "volumes_bytes": vol_bytes,
-            "host_dirs": dirs, "host_bytes": host_bytes,
-            "total_bytes": vol_bytes + host_bytes}
-
-
-@app.post("/api/orgs/{slug}/sweep-legacy")
-def sweep_legacy(slug: str, request: Request) -> dict[str, Any]:
-    """Drop the rollback: legacy volumes + host-dir copies. Explicit admin
-    action behind a preview + armed click in the UI — the data lives ON the
-    org disk now; this deletes only the pre-migration copies."""
-    if _public_slug(request):
-        raise HTTPException(403, "admin side only")
-    org = _disk_org(slug)
-    from . import disk as dsk
-    if not dsk.is_mounted(org.d["slug"]):
-        raise HTTPException(503, "the org disk is not mounted — not touching "
-                                 "its rollback backup")
-    vols, dirs = _legacy_targets(slug)
-    failures: list[str] = []
-    if vols:
-        r = subprocess.run(["docker", "volume", "rm", "-f", *vols],
-                           capture_output=True, text=True, timeout=120,
-                           creationflags=(subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
-                                          if os.name == "nt" else 0))
-        if r.returncode != 0:
-            failures.append((r.stderr or r.stdout)[-200:])
-    for p in dirs:
-        try:
-            shutil.rmtree(p)
-        except OSError as e:
-            failures.append(f"{p}: {e}")
-    return {"removed_volumes": vols, "removed_dirs": dirs,
-            "failures": failures}
 
 
 @app.get("/api/orgs/{slug}/nodes/{nid}/chat")
@@ -9521,7 +8838,21 @@ if os.path.isdir(FRONTEND_DIST):
     app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")),
               name="assets")
 
-    @app.get("/{path:path}")
+    class _SpaPathConvertor(Convertor):
+        # excludes any "api" first segment, so an unmatched /api/* request 404s
+        # (and is logged `<unmatched>`, see AccessRecord) instead of silently
+        # getting served the SPA shell as a 200.
+        regex = r"(?!api(?:/|$)).*"
+
+        def convert(self, value: str) -> str:
+            return str(value)
+
+        def to_string(self, value: str) -> str:
+            return str(value)
+
+    register_url_convertor("spa", _SpaPathConvertor())
+
+    @app.get("/{path:spa}")
     def spa(path: str) -> FileResponse:
         full = os.path.normpath(os.path.join(FRONTEND_DIST, path))
         if path and full.startswith(FRONTEND_DIST + os.sep) \
@@ -9566,100 +8897,7 @@ def _admin_host() -> str:
     by anything that can write the doc, including an agent.
     """
     exposed = os.environ.get(EXPOSE_ENV, "").strip().lower() in _TRUTHY
-    if exposed and not deployment.current_policy().allow_admin_exposure:
-        raise deployment.DeploymentConfigError(
-            "the frozen deployment profile forbids ORGTREE_EXPOSE_ADMIN; "
-            "unset it so the unauthenticated admin API remains loopback-only")
     return "0.0.0.0" if exposed else "127.0.0.1"
-
-
-def _deployment_preflight() -> deployment.DeploymentPolicy:
-    """Validate the official backend launch against the install-wide policy.
-
-    Frozen mode never converts existing state or silently ignores a
-    contradictory exposure setting. Startup refusal keeps the weaker state
-    offline until the operator explicitly inventories and migrates it.
-    """
-
-    policy = deployment.current_policy()
-    # A conflicting exposure request is a configuration error, not an option
-    # to silently ignore.
-    _admin_host()
-    if not policy.allow_public_listener and PUBLIC_PORT:
-        raise deployment.DeploymentConfigError(
-            "the frozen deployment profile forbids the public kiosk listener; "
-            "unset ORGTREE_PUBLIC_PORT (or set it to 0)")
-    sandbox.validate_deployment_network(policy=policy)
-    legacy_auth = os.environ.get("ORGTREE_SANDBOX_API_KEY", "").strip().lower()
-    if not policy.allow_legacy_sandbox_credentials \
-            and legacy_auth == "subscription":
-        raise deployment.DeploymentConfigError(
-            "the frozen deployment profile disables legacy sandbox credential "
-            "copying; ORGTREE_SANDBOX_API_KEY='subscription' is forbidden — "
-            "use proxied auth or an explicit API key")
-    defaults = load_org_defaults()
-    default_kiosk = (defaults.get("kiosk")
-                      if isinstance(defaults.get("kiosk"), dict) else {})
-    if not policy.allow_legacy_sandbox_credentials and (
-            str(defaults.get("api_key") or "").strip().lower()
-            == "subscription"
-            or str(default_kiosk.get("api_key") or "").strip().lower()
-            == "subscription"):
-        raise deployment.DeploymentConfigError(
-            "the frozen deployment profile disables legacy sandbox credential "
-            "copying; defaults.json contains forbidden 'subscription' auth -- "
-            "remove it and use proxied auth or an explicit API key")
-    if not policy.require_sandboxed_orgs:
-        return policy
-
-    unsandboxed: list[str] = []
-    legacy_credentials: list[str] = []
-    for row in store.list_orgs():
-        slug = str(row.get("slug") or "<unknown>")
-        try:
-            org = store.load_org(slug)
-        except (LedgerError, OSError) as e:
-            # Could not prove the security property, so frozen mode does not
-            # start. Keep the slug and a compact reason for inventory work.
-            unsandboxed.append(f"{slug} (could not verify: {e})")
-            continue
-        if not sandbox.is_sandboxed(org):
-            unsandboxed.append(slug)
-        kiosk = org.d.get("kiosk") or {}
-        persisted_subscription = (
-            str(org.d.get("api_key") or "").strip().lower() == "subscription"
-            or str(kiosk.get("api_key") or "").strip().lower()
-            == "subscription")
-        try:
-            effective_subscription = sandbox.uses_legacy_credential_copy(org)
-            copied_credentials = sandbox.copied_subscription_credentials(org)
-        except deployment.DeploymentConfigError as e:
-            legacy_credentials.append(f"{slug} (could not verify: {e})")
-            continue
-        if persisted_subscription or effective_subscription:
-            legacy_credentials.append(f"{slug} ('subscription' auth)")
-        if copied_credentials:
-            legacy_credentials.append(f"{slug} (copied credential file)")
-    if unsandboxed:
-        raise deployment.DeploymentConfigError(
-            "the frozen deployment profile requires every org to be "
-            "sandboxed; refusing startup because these orgs are not "
-            f"sandboxed: {', '.join(unsandboxed)}. While running the standard "
-            "profile, back up each org, recreate it with sandboxing enabled, "
-            "verify the replacement, and remove the unsandboxed original "
-            "before enabling frozen mode.")
-    if legacy_credentials:
-        raise deployment.DeploymentConfigError(
-            "the frozen deployment profile disables legacy sandbox credential "
-            "copying; refusing startup because forbidden state exists in: "
-            f"{', '.join(legacy_credentials)}. Remove stored 'subscription' "
-            "selectors and any sandbox .claude/.credentials.json copies, then "
-            "use proxied auth or an explicit API key.")
-    # This is deliberately last: policy/profile selection and persisted-state
-    # inventory have their own precise refusals, then the approved-install
-    # verifier proves the code/dependency/provider/image/launch configuration.
-    frozen_install.require_approved_install(policy=policy)
-    return policy
 
 
 def _ws_impl() -> str | None:
@@ -9717,33 +8955,6 @@ def main() -> None:
         print(f"\n{e}\n", file=sys.stderr, flush=True)
         raise SystemExit(1)
 
-    host: str | None = None
-    try:
-        selected_policy = deployment.current_policy()
-        if selected_policy.name == "frozen":
-            # Only this module entry point can truthfully register the Uvicorn
-            # listener plan. A direct ``uvicorn orgtree.api:app`` launch never
-            # reaches this call and is refused at ASGI startup.
-            host = _admin_host()
-            raw_public_port = os.environ.get("ORGTREE_PUBLIC_PORT")
-            frozen_install.register_official_launch(
-                admin_host=host,
-                public_port=(0 if raw_public_port == "0"
-                             else raw_public_port),
-                expose_admin=os.environ.get(EXPOSE_ENV),
-                admin_port=PORT,
-                bridge_port=sandbox.BRIDGE_PORT,
-            )
-        policy = _deployment_preflight()
-    except deployment.DeploymentConfigError as e:
-        bar = "!" * 74
-        print(f"\n{bar}\n"
-              "  DEPLOYMENT POLICY REFUSED STARTUP\n\n"
-              f"  {e}\n\n"
-              "  Fix the configuration/state above, then start orgtree again.\n"
-              f"{bar}\n", flush=True)
-        raise SystemExit(2) from e
-
     if _ws_impl() is None:
         bar = "!" * 74
         print(f"\n{bar}\n"
@@ -9756,8 +8967,7 @@ def main() -> None:
               "  Fix:  pip install -r requirements.txt      (or: pip install websockets)\n"
               f"{bar}\n", flush=True)
 
-    if host is None:
-        host = _admin_host()
+    host = _admin_host()
     if host != "127.0.0.1":
         # not a log line — a wall. Whoever typed the flag should see exactly
         # what they turned off, and anyone reading the console later should be
@@ -9802,19 +9012,12 @@ def main() -> None:
     # preauthenticated /k/<token> URLs; the bridge listener serves nothing but
     # secret-gated sandbox traffic
     servers = [uvicorn.Server(uvicorn.Config(app, host=host, port=PORT))]
-    if PUBLIC_PORT and policy.allow_public_listener:
+    if PUBLIC_PORT:
         servers.append(uvicorn.Server(uvicorn.Config(
             PublicGateway(app), host="0.0.0.0", port=PUBLIC_PORT)))
     if sandbox.BRIDGE_PORT:
-        # The frozen org credential rides in the Anthropic URL because the
-        # CLI cannot attach a private header. Uvicorn logs request paths by
-        # default, so suppress only this listener's access log in frozen mode.
-        # The relay also logs no paths. Standard logging stays unchanged.
-        bridge_log = ({"access_log": False}
-                      if not policy.allow_sandbox_internet else {})
         servers.append(uvicorn.Server(uvicorn.Config(
-            BridgeGateway(app), host=sandbox.bridge_bind_host(),
-            port=sandbox.BRIDGE_PORT, **bridge_log)))
+            BridgeGateway(app), host="0.0.0.0", port=sandbox.BRIDGE_PORT)))
     if len(servers) == 1:
         uvicorn.run(app, host=host, port=PORT)
         return

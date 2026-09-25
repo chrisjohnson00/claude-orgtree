@@ -249,7 +249,9 @@ def _():
 @t("§4 _run_one_turn prepends the block to the turn text, ahead of the provider seam")
 def _():
     import inspect
-    src = inspect.getsource(supervisor._run_one_turn)
+    # _run_one_turn is now a thin wrapper; the pinned body lives in
+    # _run_one_turn_recorded.
+    src = inspect.getsource(supervisor._run_one_turn_recorded)
     # D-223 put a decision in front of the renderer: the turn path calls
     # `_envelope_state_block`, which decides whether the chart span rides this
     # turn and then calls `org_state_block` either way. Follow the indirection

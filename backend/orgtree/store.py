@@ -74,6 +74,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import fcntl
 import hashlib
 import json
 import os
@@ -296,21 +297,10 @@ def owner_file(root: str | None = None) -> str:
 
 
 def _try_lock(fd: int) -> bool:
-    """Exclusive, non-blocking, on BYTE 0. False = someone else holds it.
-
-    ⚠ `msvcrt.locking` locks a range starting at the file's CURRENT position,
-    so the seek is part of the contract, not tidiness: locking at EOF would
-    give two processes two different byte ranges and mutual exclusion would
-    silently not hold. Hence a raw fd (position 0 after `os.open`) rather than
-    a text handle opened `"a+"` (position EOF)."""
+    """Exclusive, non-blocking `flock` on the whole file. False = someone else
+    holds it."""
     try:
-        os.lseek(fd, 0, os.SEEK_SET)
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return True
     except OSError:
         return False
@@ -418,13 +408,7 @@ def release_data_root() -> None:
     if fd is None:
         return
     try:
-        os.lseek(fd, 0, os.SEEK_SET)
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_UN)
+        fcntl.flock(fd, fcntl.LOCK_UN)
     except OSError:
         pass
     try:
@@ -647,8 +631,8 @@ class BackendMismatch(MigrationError):
     (phase1-audit, 2026-09-04). Which is the shape of a real incident: the
     flip goes out, something unrelated looks wrong, someone reverts the CODE
     without restoring the DATA, and the org appears to have vanished while
-    `update.ps1`'s health check — which only wants HTTP 200 from /api/orgs —
-    reports the rollback a success."""
+    a deploy health check that only wants HTTP 200 from /api/orgs reports the
+    rollback a success."""
 
 
 def active_databases(root: str | None = None) -> list[str]:
@@ -731,10 +715,9 @@ def _refusal_text(root: str, pending: list[str]) -> str:
         f"\n"
         f"\n"
         f"  YOU ALMOST CERTAINLY WANT YOUR NORMAL DEPLOY, WHICH DOES THIS FOR YOU:\n"
-        f"      Windows   powershell -ExecutionPolicy Bypass -File update.ps1\n"
-        f"      POSIX     ./update.sh\n"
-        f"  Since 2026-09-04 those detect this exact situation before they stop\n"
-        f"  anything and run the migration as part of the deploy -- stop, migrate,\n"
+        f"      ./update.sh\n"
+        f"  Since 2026-09-04 it detects this exact situation before it stops\n"
+        f"  anything and runs the migration as part of the deploy -- stop, migrate,\n"
         f"  export-verify, start -- keeping a validated export you can roll back to.\n"
         f"  Reaching THIS message means the backend was started some other way.\n"
         f"\n"

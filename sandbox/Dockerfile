@@ -16,11 +16,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG CLAUDE_VERSION=latest
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_VERSION}
 
+# `agent` carries the host backend's uid/gid (build-args supplied by
+# sandbox.ensure_image): bind mounts keep raw uids on native Linux, so any
+# other uid leaves home, workspace or scratch writable from only one side.
+# The script also re-runs over an org's existing /etc volume (see
+# sandbox.ensure_container), so it ships in the image.
+ARG AGENT_UID=1001
+ARG AGENT_GID=1001
+COPY agent-ids.sh /usr/local/sbin/orgtree-agent-ids
 # agents get ROOT via passwordless sudo (user spec 2026-07-31): the container
 # is the isolation boundary, so inside it they may install packages, edit
 # system config, bind low ports — anything. The CLI itself keeps running as
 # the non-root user (it dislikes running as root).
-RUN useradd -m -s /bin/bash agent \
+RUN orgtree-agent-ids "$AGENT_UID" "$AGENT_GID" \
     && echo 'agent ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent
 USER agent
